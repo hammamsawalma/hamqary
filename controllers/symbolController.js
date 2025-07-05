@@ -2,6 +2,7 @@ const { getSelectedSymbols } = require('../config/database');
 const { handleFirstTimeSymbolSelection } = require('../config/cron');
 const { saveSelectedSymbols } = require('../models/database');
 const getBinanceUSDTSymbols = require('../utils/getBinanceUSDTSymbols');
+const loadHistoricalCandleData = require('../utils/loadHistoricalCandleData');
 
 /**
  * Display the home page with selected symbols
@@ -70,7 +71,7 @@ async function symbolsListController(req, res) {
 }
 
 /**
- * Handle symbol selection submission
+ * Handle symbol selection submission with smart change detection
  * @param {Object} req - Express request object
  * @param {Object} res - Express response object
  */
@@ -94,6 +95,19 @@ async function symbolsSelectController(req, res) {
         
         console.log(`🎯 Symbol selection requested: ${selectedSymbols.length} symbols`);
         
+        // Get current symbols to detect changes
+        const currentSymbols = await getSelectedSymbols(client);
+        
+        // Detect symbol changes
+        const addedSymbols = selectedSymbols.filter(symbol => !currentSymbols.includes(symbol));
+        const removedSymbols = currentSymbols.filter(symbol => !selectedSymbols.includes(symbol));
+        const unchangedSymbols = selectedSymbols.filter(symbol => currentSymbols.includes(symbol));
+        
+        console.log(`🔍 Symbol change analysis:`);
+        console.log(`   ✅ Unchanged: ${unchangedSymbols.length} (${unchangedSymbols.join(', ') || 'none'})`);
+        console.log(`   ➕ Added: ${addedSymbols.length} (${addedSymbols.join(', ') || 'none'})`);
+        console.log(`   ➖ Removed: ${removedSymbols.length} (${removedSymbols.join(', ') || 'none'})`);
+        
         // Check if system was recently reset (database is empty or system is not running)
         const db = client.db(dbName);
         const collections = await db.listCollections().toArray();
@@ -112,22 +126,37 @@ async function symbolsSelectController(req, res) {
             };
         }
         
-        // Store in MongoDB
-        const { isFirstSelection } = await saveSelectedSymbols(client, dbName, selectedSymbols);
+        // Store in MongoDB with enhanced tracking
+        const { isFirstSelection } = await saveSelectedSymbolsWithChanges(client, dbName, selectedSymbols, addedSymbols, removedSymbols);
         
-        // After reset, ALWAYS treat as first selection to trigger complete fresh startup
-        const treatAsFirstSelection = systemWasReset || isFirstSelection;
-        
-        if (treatAsFirstSelection && selectedSymbols.length > 0) {
-            console.log('🚀 Starting fresh system with new symbols...');
-            console.log(`   └── Symbols: ${selectedSymbols.join(', ')}`);
-            console.log('   └── Loading historical data and starting all processes...');
+        // Handle different scenarios
+        if (systemWasReset || isFirstSelection) {
+            // Complete fresh startup - load all symbols
+            console.log('🚀 Starting fresh system with all symbols...');
+            console.log(`   └── All Symbols: ${selectedSymbols.join(', ')}`);
+            console.log('   └── Loading complete historical data and starting all processes...');
             
-            // We don't await this to avoid blocking the response
             handleFirstTimeSymbolSelection(client, dbName, selectedSymbols, true)
                 .catch(error => {
                     console.error('❌ Error in fresh system startup:', error);
                 });
+                
+        } else if (addedSymbols.length > 0) {
+            // Smart addition - backfill only new symbols
+            console.log('🆕 Smart symbol addition detected...');
+            console.log(`   └── New Symbols: ${addedSymbols.join(', ')}`);
+            console.log('   └── Loading historical data for new symbols only...');
+            
+            // Load historical data only for newly added symbols
+            handleNewSymbolAddition(client, dbName, addedSymbols)
+                .catch(error => {
+                    console.error('❌ Error in new symbol addition:', error);
+                });
+        }
+        
+        if (removedSymbols.length > 0) {
+            console.log('🗑️ Removed symbols will stop being processed but data will be preserved');
+            console.log(`   └── Use individual signal deletion buttons to clean up unwanted signals`);
         }
         
         // Redirect back to symbols page with a success parameter
@@ -176,9 +205,79 @@ async function symbolsResetController(req, res) {
     }
 }
 
+/**
+ * Handle addition of new symbols to running system
+ * @param {Object} client - MongoDB client
+ * @param {string} dbName - Database name
+ * @param {Array} newSymbols - Array of newly added symbols
+ */
+async function handleNewSymbolAddition(client, dbName, newSymbols) {
+    console.log(`🆕 Loading historical data for ${newSymbols.length} new symbols...`);
+    
+    try {
+        // Create a temporary override for symbol selection to process only new symbols
+        const originalFunction = require('../utils/fetchAndStoreCandleData');
+        
+        // We need to call loadHistoricalCandleData directly with new symbols
+        const results = await loadHistoricalCandleData(client, dbName, newSymbols);
+        
+        console.log(`✅ New symbol historical data loading completed:`);
+        console.log(`   └── Candles stored: ${results.candlesStored}`);
+        console.log(`   └── Artificial candles generated: ${results.artificialCandlesGenerated}`);
+        
+        if (results.errors.length > 0) {
+            console.log(`⚠️ Some errors occurred during historical data loading:`);
+            results.errors.forEach(error => console.log(`   └── ${error}`));
+        }
+        
+    } catch (error) {
+        console.error('❌ Error loading historical data for new symbols:', error);
+    }
+}
+
+/**
+ * Enhanced symbol saving with change tracking
+ * @param {Object} client - MongoDB client
+ * @param {string} dbName - Database name
+ * @param {Array} selectedSymbols - Array of selected symbols
+ * @param {Array} addedSymbols - Array of added symbols
+ * @param {Array} removedSymbols - Array of removed symbols
+ * @returns {Promise<Object>} Result of the database operation
+ */
+async function saveSelectedSymbolsWithChanges(client, dbName, selectedSymbols, addedSymbols, removedSymbols) {
+    if (!client) {
+        throw new Error('Database connection not available');
+    }
+    
+    const db = client.db(dbName);
+    const collection = db.collection('selectedSymbols');
+    
+    // Check if this is the first time symbols are being selected
+    const existingSelections = await collection.countDocuments({});
+    const isFirstSelection = existingSelections === 0;
+    
+    const result = await collection.insertOne({
+        symbols: selectedSymbols,
+        timestamp: new Date(),
+        changes: {
+            added: addedSymbols,
+            removed: removedSymbols,
+            isFirstSelection
+        }
+    });
+    
+    console.log(`✅ Saved ${selectedSymbols.length} selected symbols with change tracking`);
+    
+    return {
+        result,
+        isFirstSelection
+    };
+}
+
 module.exports = {
     homeController,
     symbolsListController,
     symbolsSelectController,
-    symbolsResetController
+    symbolsResetController,
+    handleNewSymbolAddition
 };

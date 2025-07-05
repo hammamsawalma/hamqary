@@ -78,7 +78,8 @@ async function generateArtificialCandleData(client, dbName, interval) {
     
     // Calculate the time range for aggregation
     // Use a reasonable time range to ensure we have enough data
-    const endDate = new Date();
+    const currentTime = Date.now();
+    const endDate = new Date(currentTime - 60000); // End 1 minute ago to ensure closed candles
     const lookbackMinutes = Math.max(interval * 10, 120); // At least 2 hours or 10x the interval length
     const startDate = new Date(endDate.getTime() - (lookbackMinutes * 60 * 1000));
     
@@ -86,23 +87,34 @@ async function generateArtificialCandleData(client, dbName, interval) {
       try {
         console.log(`📈 Processing ${symbol} for ${interval}m candle generation`);
         
-        // Step 3: Get the 1-minute candles for this symbol within our time range
+        // Step 3: Get only closed 1-minute candles for this symbol within our time range
         const oneMinuteCandles = await candleCollection.find({
           symbol: symbol,
           interval: '1m',
-          openTime: { $gte: startDate, $lte: endDate }
+          openTime: { $gte: startDate, $lte: endDate },
+          closeTime: { $lt: new Date(currentTime - 10000) } // Only candles closed at least 10 seconds ago
         }).sort({ openTime: 1 }).toArray();
         
-        if (oneMinuteCandles.length === 0) {
-          console.log(`⚠️ No 1-minute candles found for ${symbol} in the specified time range`);
-          results.errors.push(`No data for ${symbol}`);
+        // Additional filtering to ensure all candles are actually closed
+        const closedCandles = oneMinuteCandles.filter(candle => {
+          const candleCloseTime = candle.closeTime instanceof Date ? candle.closeTime.getTime() : candle.closeTime;
+          return candleCloseTime + 10000 < currentTime; // 10 second buffer
+        });
+        
+        if (closedCandles.length !== oneMinuteCandles.length) {
+          console.log(`⏰ Filtered out ${oneMinuteCandles.length - closedCandles.length} non-closed 1-minute candles for ${symbol}`);
+        }
+        
+        if (closedCandles.length === 0) {
+          console.log(`⚠️ No closed 1-minute candles found for ${symbol} in the specified time range`);
+          results.errors.push(`No closed data for ${symbol}`);
           continue;
         }
         
-        console.log(`📊 Found ${oneMinuteCandles.length} 1-minute candles for ${symbol}`);
+        console.log(`📊 Found ${closedCandles.length} closed 1-minute candles for ${symbol}`);
         
-        // Step 4: Group the 1-minute candles into the target interval
-        const groupedCandles = groupCandlesByInterval(oneMinuteCandles, interval, cycleMinutes);
+        // Step 4: Group the closed 1-minute candles into the target interval
+        const groupedCandles = groupCandlesByInterval(closedCandles, interval, cycleMinutes);
         
         if (Object.keys(groupedCandles).length === 0) {
           console.log(`⚠️ No complete ${interval}m candles could be formed for ${symbol}`);

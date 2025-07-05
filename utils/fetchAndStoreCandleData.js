@@ -72,8 +72,29 @@ async function fetchAndStoreCandleData(client, dbName, interval = '1m', options 
         const symbolCandles = candleData[symbol];
         console.log(`📈 Processing ${symbolCandles.length} candles for ${symbol}`);
 
+        // Filter out non-closed candles to prevent invalid signals
+        const currentTime = Date.now();
+        const closedCandles = symbolCandles.filter(candle => {
+          const candleCloseTime = candle.closeTime;
+          const bufferTime = 10000; // 10 seconds buffer
+          const isClosed = candleCloseTime + bufferTime < currentTime;
+          
+          if (!isClosed) {
+            console.log(`⏰ Skipping non-closed candle for ${symbol}: close time ${new Date(candleCloseTime).toISOString()} (current: ${new Date(currentTime).toISOString()})`);
+          }
+          
+          return isClosed;
+        });
+
+        if (closedCandles.length === 0) {
+          console.log(`⚠️ No closed candles found for ${symbol}, skipping signal processing`);
+          continue;
+        }
+
+        console.log(`✅ Processing ${closedCandles.length} closed candles for ${symbol} (filtered out ${symbolCandles.length - closedCandles.length} non-closed)`);
+
         // Prepare documents for insertion
-        const documents = symbolCandles.map(candle => ({
+        const documents = closedCandles.map(candle => ({
           symbol,
           interval,
           openTime: new Date(candle.openTime),

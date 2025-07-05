@@ -382,6 +382,95 @@ async function getReversalStatistics(client, dbName, filters = {}) {
 }
 
 /**
+ * Delete a specific reversal signal from the database
+ * @param {Object} client - MongoDB client
+ * @param {string} dbName - Database name
+ * @param {string} signalId - ID of the signal to delete
+ * @returns {Promise<Object>} Result of the deletion operation
+ */
+async function deleteReversalSignal(client, dbName, signalId) {
+    if (!client) {
+        throw new Error('Database connection not available');
+    }
+    
+    const db = client.db(dbName);
+    const collection = db.collection('reversalCandles');
+    
+    try {
+        // Convert string ID to MongoDB ObjectId
+        const { ObjectId } = require('mongodb');
+        const objectId = new ObjectId(signalId);
+        
+        // Delete the signal
+        const result = await collection.deleteOne({ _id: objectId });
+        
+        if (result.deletedCount === 1) {
+            console.log(`✅ Successfully deleted signal with ID: ${signalId}`);
+            return {
+                success: true,
+                deletedCount: result.deletedCount,
+                message: 'Signal deleted successfully'
+            };
+        } else {
+            console.log(`⚠️ No signal found with ID: ${signalId}`);
+            return {
+                success: false,
+                deletedCount: 0,
+                message: 'Signal not found'
+            };
+        }
+        
+    } catch (error) {
+        console.error(`❌ Error deleting signal ${signalId}:`, error);
+        return {
+            success: false,
+            deletedCount: 0,
+            message: `Error deleting signal: ${error.message}`
+        };
+    }
+}
+
+/**
+ * Delete multiple reversal signals from the database
+ * @param {Object} client - MongoDB client
+ * @param {string} dbName - Database name
+ * @param {Array} signalIds - Array of signal IDs to delete
+ * @returns {Promise<Object>} Result of the deletion operation
+ */
+async function deleteMultipleReversalSignals(client, dbName, signalIds) {
+    if (!client) {
+        throw new Error('Database connection not available');
+    }
+    
+    const db = client.db(dbName);
+    const collection = db.collection('reversalCandles');
+    
+    try {
+        // Convert string IDs to MongoDB ObjectIds
+        const { ObjectId } = require('mongodb');
+        const objectIds = signalIds.map(id => new ObjectId(id));
+        
+        // Delete the signals
+        const result = await collection.deleteMany({ _id: { $in: objectIds } });
+        
+        console.log(`✅ Successfully deleted ${result.deletedCount} signals`);
+        return {
+            success: true,
+            deletedCount: result.deletedCount,
+            message: `Successfully deleted ${result.deletedCount} signals`
+        };
+        
+    } catch (error) {
+        console.error(`❌ Error deleting multiple signals:`, error);
+        return {
+            success: false,
+            deletedCount: 0,
+            message: `Error deleting signals: ${error.message}`
+        };
+    }
+}
+
+/**
  * Ensure reversal candles collection has proper indexes
  * @param {Object} client - MongoDB client
  * @param {string} dbName - Database name
@@ -424,5 +513,7 @@ module.exports = {
     getReversalCandles,
     getReversalCandleCount,
     getReversalStatistics,
+    deleteReversalSignal,
+    deleteMultipleReversalSignals,
     ensureReversalCandleIndexes
 };

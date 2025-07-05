@@ -4,6 +4,7 @@
  */
 
 const { getSelectedSymbols } = require('../config/database');
+const { deleteReversalSignal } = require('../models/database');
 
 /**
  * Display trading signals dashboard (new home page)
@@ -181,6 +182,82 @@ async function getSignalsStatistics(collection, baseQuery) {
         sellSignals,
         highScoreSignals,
         avgScore: Math.round(avgScore * 10) / 10
+    };
+}
+
+/**
+ * Calculate stop loss price and risk percentage for a signal
+ * @param {Object} signal - Signal data with OHLC values
+ * @returns {Object} Stop loss information
+ */
+function calculateStopLoss(signal) {
+    // First, let's find where the OHLC data is stored
+    let open, high, low, close;
+    
+    // Try different possible locations for OHLC data
+    if (signal.open !== undefined) {
+        // Direct properties
+        ({ open, high, low, close } = signal);
+    } else if (signal.candleData) {
+        // Nested in candleData
+        ({ open, high, low, close } = signal.candleData);
+    } else if (signal.ohlc) {
+        // Nested in ohlc object
+        ({ open, high, low, close } = signal.ohlc);
+    } else {
+        // Try alternative property names
+        open = signal.openPrice || signal.open_price;
+        high = signal.highPrice || signal.high_price;
+        low = signal.lowPrice || signal.low_price;
+        close = signal.closePrice || signal.close_price;
+    }
+    
+    // Debug logging - remove after fixing
+    if (open === undefined || high === undefined || low === undefined || close === undefined) {
+        console.log('🚨 OHLC Data Debug - Signal Object Structure:');
+        console.log('Signal keys:', Object.keys(signal));
+        console.log('OHLC Values:', { open, high, low, close });
+        console.log('Sample signal object (first few properties):', JSON.stringify(signal, null, 2).substring(0, 500) + '...');
+    }
+    
+    const signalType = signal.tradeSignal?.signalType;
+    
+    // Validate data before calculation
+    if (!signalType || typeof open !== 'number' || typeof high !== 'number' || 
+        typeof low !== 'number' || typeof close !== 'number') {
+        return {
+            stopLossPrice: 'N/A',
+            riskPercentage: 0,
+            formattedStopLoss: 'N/A',
+            formattedRiskPercentage: 'N/A'
+        };
+    }
+    
+    let stopLossPrice;
+    let riskPercentage;
+    
+    if (signalType === 'buy') {
+        // For buy signals: Stop Loss = Low of the candle
+        stopLossPrice = low;
+        // Risk percentage = ((close - low) / close) * 100
+        riskPercentage = ((close - low) / close) * 100;
+    } else { // sell
+        // For sell signals: Stop Loss = High of the candle
+        stopLossPrice = high;
+        // Risk percentage = ((high - close) / close) * 100
+        riskPercentage = ((high - close) / close) * 100;
+    }
+    
+    // Ensure valid numbers
+    if (isNaN(riskPercentage) || !isFinite(riskPercentage)) {
+        riskPercentage = 0;
+    }
+    
+    return {
+        stopLossPrice: stopLossPrice,
+        riskPercentage: Math.round(riskPercentage * 100) / 100, // Round to 2 decimal places
+        formattedStopLoss: typeof stopLossPrice === 'number' ? stopLossPrice.toFixed(8).replace(/\.?0+$/, '') : 'N/A',
+        formattedRiskPercentage: isNaN(riskPercentage) ? 'N/A' : `${Math.round(riskPercentage * 100) / 100}%`
     };
 }
 
@@ -453,6 +530,46 @@ function generateSignalsDashboard(viewData) {
                     color: #e74c3c;
                 }
                 
+                /* Stop Loss Section */
+                .stop-loss-section {
+                    margin: 15px 0;
+                    padding: 15px;
+                    background: linear-gradient(135deg, rgba(231, 76, 60, 0.1), rgba(192, 57, 43, 0.05));
+                    border-radius: 10px;
+                    border-left: 4px solid #e74c3c;
+                }
+                .stop-loss-grid {
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 15px;
+                }
+                .stop-loss-item, .risk-item {
+                    text-align: center;
+                    padding: 12px;
+                    background: rgba(255, 255, 255, 0.8);
+                    border-radius: 8px;
+                }
+                .stop-loss-label, .risk-label {
+                    font-size: 0.8em;
+                    color: #e74c3c;
+                    text-transform: uppercase;
+                    letter-spacing: 1px;
+                    margin-bottom: 5px;
+                    font-weight: 600;
+                }
+                .stop-loss-price {
+                    font-size: 1.1em;
+                    font-weight: 700;
+                    color: #c0392b;
+                    font-family: 'Courier New', monospace;
+                }
+                .risk-percentage {
+                    font-size: 1.2em;
+                    font-weight: 700;
+                    color: #e74c3c;
+                    text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+                }
+                
                 .signal-time {
                     text-align: center;
                     color: #7f8c8d;
@@ -617,6 +734,26 @@ function generateSignalsDashboard(viewData) {
                     font-weight: bold;
                 }
                 
+                /* Delete Signal Button */
+                .delete-signal-btn {
+                    background: none;
+                    border: none;
+                    font-size: 1.2em;
+                    cursor: pointer;
+                    padding: 5px 8px;
+                    border-radius: 6px;
+                    transition: all 0.2s ease;
+                    opacity: 0.6;
+                }
+                .delete-signal-btn:hover {
+                    background: rgba(231, 76, 60, 0.1);
+                    opacity: 1;
+                    transform: scale(1.1);
+                }
+                .delete-signal-btn:active {
+                    transform: scale(0.95);
+                }
+                
                 /* Responsive */
                 @media (max-width: 768px) {
                     .container { padding: 15px; }
@@ -762,11 +899,16 @@ function generateSignalsDashboard(viewData) {
                 ${viewData.signals.length > 0 ? `
                     <div class="signals-grid">
                         ${viewData.signals.map(signal => `
-                            <div class="signal-card ${signal.tradeSignal.signalType}">
+                            <div class="signal-card ${signal.tradeSignal.signalType}" data-signal-id="${signal._id}">
                                 <div class="signal-header">
                                     <div class="signal-symbol">${signal.symbol}</div>
-                                    <div class="signal-type ${signal.tradeSignal.signalType}">
-                                        ${signal.tradeSignal.signalType === 'buy' ? '📈 BUY' : '📉 SELL'}
+                                    <div style="display: flex; align-items: center; gap: 10px;">
+                                        <div class="signal-type ${signal.tradeSignal.signalType}">
+                                            ${signal.tradeSignal.signalType === 'buy' ? '📈 BUY' : '📉 SELL'}
+                                        </div>
+                                        <button class="delete-signal-btn" onclick="deleteSignal('${signal._id}')" title="Delete this signal">
+                                            🗑️
+                                        </button>
                                     </div>
                                 </div>
                                 
@@ -800,6 +942,24 @@ function generateSignalsDashboard(viewData) {
                                         <div>${signal.volumeFootprint.val}</div>
                                     </div>
                                 </div>
+                                
+                                ${(() => {
+                                    const stopLoss = calculateStopLoss(signal);
+                                    return `
+                                        <div class="stop-loss-section">
+                                            <div class="stop-loss-grid">
+                                                <div class="stop-loss-item">
+                                                    <div class="stop-loss-label">Stop Loss</div>
+                                                    <div class="stop-loss-price">${stopLoss.formattedStopLoss}</div>
+                                                </div>
+                                                <div class="risk-item">
+                                                    <div class="risk-label">Risk</div>
+                                                    <div class="risk-percentage">${stopLoss.formattedRiskPercentage}</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    `;
+                                })()}
                                 
                                 <div class="signal-time">
                                     <div style="margin-bottom: 5px;">
@@ -987,6 +1147,72 @@ function generateSignalsDashboard(viewData) {
                     }
                 });
                 
+                // Signal deletion function
+                function deleteSignal(signalId) {
+                    if (confirm('🗑️ Delete Signal\\n\\nAre you sure you want to delete this signal?\\n\\nThis action cannot be undone.')) {
+                        // Find the signal card
+                        const signalCard = document.querySelector('[data-signal-id="' + signalId + '"]');
+                        if (signalCard) {
+                            // Add loading state
+                            signalCard.style.opacity = '0.5';
+                            signalCard.style.pointerEvents = 'none';
+                        }
+                        
+                        // Send delete request
+                        fetch('/api/signals/' + signalId, {
+                            method: 'DELETE',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            }
+                        })
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.success) {
+                                // Remove the signal card with animation
+                                if (signalCard) {
+                                    signalCard.style.transform = 'scale(0.8)';
+                                    signalCard.style.transition = 'all 0.3s ease';
+                                    setTimeout(() => {
+                                        signalCard.remove();
+                                        // Check if no signals left
+                                        const remainingSignals = document.querySelectorAll('.signal-card').length;
+                                        if (remainingSignals === 0) {
+                                            location.reload(); // Refresh to show empty state
+                                        }
+                                    }, 300);
+                                }
+                                
+                                // Show success message briefly
+                                const successMsg = document.createElement('div');
+                                successMsg.style.cssText = 'position: fixed; top: 20px; right: 20px; background: #27ae60; color: white; padding: 15px 20px; border-radius: 10px; z-index: 10000; box-shadow: 0 4px 15px rgba(0,0,0,0.2);';
+                                successMsg.textContent = '✅ Signal deleted successfully';
+                                document.body.appendChild(successMsg);
+                                setTimeout(() => successMsg.remove(), 3000);
+                                
+                            } else {
+                                // Restore signal card
+                                if (signalCard) {
+                                    signalCard.style.opacity = '1';
+                                    signalCard.style.pointerEvents = 'auto';
+                                }
+                                alert('❌ Failed to delete signal: ' + data.message);
+                            }
+                        })
+                        .catch(error => {
+                            // Restore signal card
+                            if (signalCard) {
+                                signalCard.style.opacity = '1';
+                                signalCard.style.pointerEvents = 'auto';
+                            }
+                            console.error('Error deleting signal:', error);
+                            alert('❌ Error deleting signal: ' + error.message);
+                        });
+                    }
+                }
+                
+                // Make deleteSignal function available globally
+                window.deleteSignal = deleteSignal;
+                
                 // Initialize
                 updateSelectedCount();
                 
@@ -998,6 +1224,60 @@ function generateSignalsDashboard(viewData) {
     `;
 }
 
+/**
+ * Delete a specific signal
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+async function deleteSignalController(req, res) {
+    try {
+        const client = req.app.locals.client;
+        const dbName = req.app.locals.dbName;
+        const signalId = req.params.id;
+        
+        // Check MongoDB connection
+        if (!client) {
+            return res.status(500).json({
+                success: false,
+                message: 'Database connection not available'
+            });
+        }
+        
+        if (!signalId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Signal ID is required'
+            });
+        }
+        
+        console.log(`🗑️ Deleting signal with ID: ${signalId}`);
+        
+        // Delete the signal
+        const result = await deleteReversalSignal(client, dbName, signalId);
+        
+        if (result.success) {
+            res.json({
+                success: true,
+                message: result.message,
+                deletedCount: result.deletedCount
+            });
+        } else {
+            res.status(404).json({
+                success: false,
+                message: result.message
+            });
+        }
+        
+    } catch (error) {
+        console.error('Error deleting signal:', error);
+        res.status(500).json({
+            success: false,
+            message: 'An error occurred while deleting the signal: ' + error.message
+        });
+    }
+}
+
 module.exports = {
-    signalsController
+    signalsController,
+    deleteSignalController
 };

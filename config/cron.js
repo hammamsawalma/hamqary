@@ -16,48 +16,31 @@ let processingQueue = false;
 
 /**
  * Determines if a candle should be generated at the current time for the given interval
- * Uses cycle-based alignment to match TradingView standards exactly
+ * Uses simple minute-boundary alignment for reliability
  * @param {Date} currentTime - Current time
  * @param {number} intervalMinutes - Candle interval in minutes
- * @param {number} cycleMinutes - Cycle period in minutes
  * @returns {boolean} True if a candle should be generated
  */
-function shouldGenerateCandle(currentTime, intervalMinutes, cycleMinutes) {
-    // Use daily midnight UTC as the base reference - FIXED VERSION
-    const date = new Date(currentTime);
-    
-    // Create proper UTC midnight using Date.UTC
-    const midnightUTC = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0, 0));
-    
-    // Calculate time since midnight in milliseconds
-    const msSinceMidnight = currentTime.getTime() - midnightUTC.getTime();
-    const cycleMs = cycleMinutes * 60 * 1000;
-    const intervalMs = intervalMinutes * 60 * 1000;
-    
-    // Find which cycle we're in (cycles repeat throughout the day)
-    const currentCycleIndex = Math.floor(msSinceMidnight / cycleMs);
-    
-    // Calculate the start of the current cycle
-    const currentCycleStart = midnightUTC.getTime() + (currentCycleIndex * cycleMs);
-    
-    // Calculate time since current cycle start
-    const msSinceCycleStart = currentTime.getTime() - currentCycleStart;
-    
-    // Find which interval within the cycle
-    const intervalIndex = Math.floor(msSinceCycleStart / intervalMs);
-    
-    // Calculate the expected end time of current interval
-    const intervalEnd = currentCycleStart + ((intervalIndex + 1) * intervalMs);
-    
-    // Check if we're within 30 seconds after the interval should end
-    const timeDiff = currentTime.getTime() - intervalEnd;
-    const isTimeToGenerate = timeDiff >= 0 && timeDiff < 30000; // 30 seconds window
-    
-    // Additional check: make sure we're aligned to minute boundaries
+function shouldGenerateCandle(currentTime, intervalMinutes) {
+    // Get current time components
+    const minutes = currentTime.getUTCMinutes();
     const seconds = currentTime.getUTCSeconds();
-    const isMinuteBoundary = seconds <= 5;
     
-    return isTimeToGenerate && isMinuteBoundary;
+    // Check if current minute is divisible by interval (candle boundary)
+    const isIntervalBoundary = (minutes % intervalMinutes) === 0;
+    
+    // Only generate at 10-15 seconds after the minute to ensure:
+    // 1. The previous interval has ended
+    // 2. 1-minute base data is available for aggregation
+    const isCorrectSecond = seconds >= 10 && seconds <= 15;
+    
+    const shouldGenerate = isIntervalBoundary && isCorrectSecond;
+    
+    if (shouldGenerate) {
+        console.log(`🕒 Artificial candle generation time for ${intervalMinutes}m: ${currentTime.toISOString()} (minute: ${minutes}, second: ${seconds})`);
+    }
+    
+    return shouldGenerate;
 }
 
 /**
@@ -93,7 +76,7 @@ function setupCandleDataCronJob(client, dbName) {
         
         try {
             const options = {
-                limit: 1 // Only fetch the most recent candle
+                limit: 3 // Fetch last 3 candles to ensure we have closed ones
             };
             
             // Process all real data intervals
@@ -148,14 +131,6 @@ function setupArtificialCandleDataCronJobs(client, dbName) {
     // Define the intervals for which we want to generate artificial candles (2-20 minutes)
     const intervals = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
     
-    // Define cycle times for each interval (in minutes) for proper alignment
-    const INTERVAL_CYCLES = {
-        2: 60, 3: 60, 4: 60, 5: 60, 6: 60,
-        7: 420, 8: 120, 9: 360, 10: 60, 11: 660,
-        12: 60, 13: 780, 14: 420, 15: 60, 16: 240,
-        17: 1020, 18: 360, 19: 1140, 20: 60
-    };
-    
     // Single cron job that checks all intervals and queues them for processing
     const artificialCandleJob = cron.schedule('* * * * *', async () => {
         // Check if artificial candle jobs are already running
@@ -169,8 +144,7 @@ function setupArtificialCandleDataCronJobs(client, dbName) {
         
         // Check which intervals need processing
         for (const interval of intervals) {
-            const cycleMinutes = INTERVAL_CYCLES[interval];
-            if (shouldGenerateCandle(now, interval, cycleMinutes)) {
+            if (shouldGenerateCandle(now, interval)) {
                 intervalsToProcess.push(interval);
             }
         }
@@ -274,7 +248,7 @@ async function runInitialCandleDataFetch(client, dbName) {
     
     try {
         const options = {
-            limit: 2 // Fetch last 2 candles to increase chance of reversal detection
+            limit: 3 // Fetch last 3 candles to ensure we have closed ones
         };
         
         // Process all intervals
