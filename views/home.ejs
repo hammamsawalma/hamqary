@@ -1,0 +1,85 @@
+<!-- Home page to display selected symbols -->
+<% title = 'Home - Selected Symbols' %>
+
+<div class="home-container">
+    <h2>Your Selected Symbols</h2>
+    
+    <% if (selectedSymbols && selectedSymbols.length > 0) { %>
+        <p>You have selected <%= selectedSymbols.length %> symbols:</p>
+        
+        <ul class="selected-symbols-list">
+            <% selectedSymbols.forEach(function(symbol) { %>
+                <li class="selected-symbol-item"><%= symbol %></li>
+            <% }); %>
+        </ul>
+        
+        <div class="action-buttons">
+            <a href="/symbols" class="action-btn">Manage Selections</a>
+            <a href="/candle-data" class="action-btn action-btn-secondary">View Candle Data</a>
+            <a href="/reversal-candles" class="action-btn action-btn-reversal">📈 Reversal Patterns</a>
+        </div>
+    <% } else { %>
+        <div class="alert alert-info">
+            <p>You haven't selected any symbols yet.</p>
+            <div class="action-buttons">
+                <a href="/symbols" class="action-btn">Go to Symbols Page</a>
+            </div>
+        </div>
+    <% } %>
+</div>
+
+<style>
+    .selected-symbols-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        gap: 10px;
+        list-style-type: none;
+        padding: 0;
+        margin: 20px 0;
+    }
+    
+    .selected-symbol-item {
+        background-color: #d4edda;
+        border: 1px solid #c3e6cb;
+        border-radius: 4px;
+        padding: 10px;
+        text-align: center;
+    }
+    
+    .action-buttons {
+        margin-top: 20px;
+    }
+    
+    .action-btn {
+        display: inline-block;
+        padding: 10px 20px;
+        background-color: #007bff;
+        color: white;
+        text-decoration: none;
+        border-radius: 4px;
+        transition: background-color 0.3s;
+    }
+    
+    .action-btn:hover {
+        background-color: #0069d9;
+        color: white;
+    }
+    
+    .action-btn-secondary {
+        background-color: #6c757d;
+        margin-left: 10px;
+    }
+    
+    .action-btn-secondary:hover {
+        background-color: #5a6268;
+    }
+    
+    .action-btn-reversal {
+        background-color: #28a745;
+        margin-left: 10px;
+    }
+    
+    .action-btn-reversal:hover {
+        background-color: #218838;
+    }
+</style>

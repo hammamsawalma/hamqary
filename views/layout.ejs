@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hamqary - <%= typeof title !== 'undefined' ? title : 'Binance Symbols' %></title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        header {
+            background-color: #f4f4f4;
+            padding: 1rem;
+            margin-bottom: 2rem;
+            border-radius: 5px;
+        }
+        h1 {
+            color: #2c3e50;
+        }
+        .container {
+            padding: 1rem;
+        }
+        .alert {
+            padding: 15px;
+            margin-bottom: 20px;
+            border: 1px solid transparent;
+            border-radius: 4px;
+        }
+        .alert-info {
+            color: #31708f;
+            background-color: #d9edf7;
+            border-color: #bce8f1;
+        }
+        .alert-danger {
+            color: #a94442;
+            background-color: #f2dede;
+            border-color: #ebccd1;
+        }
+        .alert-success {
+            color: #3c763d;
+            background-color: #dff0d8;
+            border-color: #d6e9c6;
+        }
+        .selection-info {
+            color: #31708f;
+            font-style: italic;
+        }
+        .symbol-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 10px;
+            list-style-type: none;
+            padding: 0;
+        }
+        .symbol-item {
+            background-color: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            text-align: center;
+            transition: background-color 0.3s;
+        }
+        .symbol-item:hover {
+            background-color: #e9e9e9;
+            cursor: pointer;
+        }
+        .search-container {
+            margin-bottom: 20px;
+        }
+        .search-input {
+            padding: 8px;
+            width: 100%;
+            max-width: 300px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .refresh-btn {
+            padding: 8px 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        .refresh-btn:hover {
+            background-color: #45a049;
+        }
+        /* Navigation styles */
+        .navbar {
+            background-color: #f4f4f4;
+            margin-top: 10px;
+            border-radius: 4px;
+        }
+        .nav-links {
+            list-style: none;
+            display: flex;
+            padding: 0;
+            margin: 0;
+        }
+        .nav-links li {
+            margin-right: 20px;
+        }
+        .nav-link {
+            text-decoration: none;
+            color: #333;
+            font-weight: bold;
+            padding: 10px 15px;
+            display: inline-block;
+            transition: color 0.3s;
+        }
+        .nav-link:hover {
+            color: #4CAF50;
+        }
+        /* Styles for symbol selection */
+        .symbol-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .symbol-checkbox {
+            margin-left: 10px;
+        }
+        .selected {
+            background-color: #d4edda;
+            border-color: #c3e6cb;
+        }
+        .submit-btn {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 20px;
+        }
+        .submit-btn:hover {
+            background-color: #0069d9;
+        }
+        footer {
+            margin-top: 2rem;
+            text-align: center;
+            font-size: 0.8rem;
+            color: #777;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Hamqary - Binance Futures</h1>
+        <nav class="navbar">
+            <ul class="nav-links">
+                <li><a href="/" class="nav-link">Home</a></li>
+                <li><a href="/symbols" class="nav-link">Symbols</a></li>
+                <li><a href="/candle-data" class="nav-link">Candle Data</a></li>
+            </ul>
+        </nav>
+    </header>
+    <div class="container">
+        <%- body %>
+    </div>
+    <footer>
+        <p>&copy; <%= new Date().getFullYear() %> Hamqary. Data provided by Binance API.</p>
+    </footer>
+
+    <script>
+        // Add functionality for the search box
+        document.addEventListener('DOMContentLoaded', function() {
+            const searchInput = document.getElementById('symbolSearch');
+            if (searchInput) {
+                searchInput.addEventListener('keyup', function() {
+                    const searchTerm = this.value.toUpperCase();
+                    const symbolItems = document.querySelectorAll('.symbol-item');
+                    
+                    symbolItems.forEach(function(item) {
+                        const symbolText = item.textContent.toUpperCase();
+                        if (symbolText.includes(searchTerm)) {
+                            item.style.display = '';
+                        } else {
+                            item.style.display = 'none';
+                        }
+                    });
+                });
+            }
+        });
+    </script>
+</body>
+</html>

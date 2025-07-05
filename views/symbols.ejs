@@ -1,0 +1,96 @@
+<!-- The title will be used in the layout -->
+<% if (typeof title === 'undefined') { %>
+    <% title = 'USDT Symbols' %>
+<% } %>
+
+<% 
+// Function to check if a symbol is in the selectedSymbols array
+function isSelected(symbol, selectedSymbols) {
+    return selectedSymbols && selectedSymbols.includes(symbol);
+}
+%>
+
+<div class="search-container">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <h2>Binance USDT Trading Pairs</h2>
+        <a href="/" class="home-btn" style="background: linear-gradient(135deg, #3498db, #2980b9); color: white; padding: 10px 20px; border-radius: 8px; text-decoration: none; font-weight: 600; transition: all 0.3s ease;">🏠 Home</a>
+    </div>
+    
+    <% if (typeof success !== 'undefined' && success === 'true') { %>
+        <div class="alert alert-success">
+            <p>Your symbol selections have been saved successfully!</p>
+        </div>
+    <% } %>
+    
+    <% if (symbols && symbols.length > 0) { %>
+        <p>Found <%= symbols.length %> active USDT trading pairs</p>
+        <% if (selectedSymbols && selectedSymbols.length > 0) { %>
+            <p class="selection-info">You have <%= selectedSymbols.length %> symbols currently selected</p>
+        <% } %>
+        <input type="text" id="symbolSearch" class="search-input" placeholder="Search symbols...">
+        <form action="/symbols" method="GET">
+            <button type="submit" class="refresh-btn">Refresh Symbols</button>
+        </form>
+    <% } %>
+</div>
+
+<% if (loading) { %>
+    <div class="alert alert-info">
+        <p>Loading symbols from Binance API...</p>
+    </div>
+<% } else if (error) { %>
+    <div class="alert alert-danger">
+        <p>Error loading symbols: <%= error %></p>
+        <form action="/symbols" method="GET">
+            <button type="submit" class="refresh-btn">Try Again</button>
+        </form>
+    </div>
+<% } else if (symbols && symbols.length > 0) { %>
+    <form action="/symbols/select" method="POST">
+        <ul class="symbol-list">
+            <% symbols.forEach(function(symbol) { %>
+                <li class="symbol-item <%= isSelected(symbol, selectedSymbols) ? 'selected' : '' %>">
+                    <%= symbol %>
+                    <input 
+                        type="checkbox" 
+                        name="selectedSymbols" 
+                        value="<%= symbol %>" 
+                        class="symbol-checkbox"
+                        <%= isSelected(symbol, selectedSymbols) ? 'checked' : '' %>
+                    >
+                </li>
+            <% }); %>
+        </ul>
+        <button type="submit" class="submit-btn">Save Selected Symbols</button>
+    </form>
+
+    <script>
+        // Add selection toggling behavior
+        document.addEventListener('DOMContentLoaded', function() {
+            const symbolItems = document.querySelectorAll('.symbol-item');
+            
+            symbolItems.forEach(function(item) {
+                item.addEventListener('click', function(e) {
+                    // Don't toggle if the checkbox was directly clicked
+                    if (e.target.type !== 'checkbox') {
+                        const checkbox = this.querySelector('input[type="checkbox"]');
+                        checkbox.checked = !checkbox.checked;
+                        
+                        // Toggle selected class
+                        this.classList.toggle('selected', checkbox.checked);
+                    } else {
+                        // Update the selected class based on checkbox state
+                        this.classList.toggle('selected', e.target.checked);
+                    }
+                });
+            });
+        });
+    </script>
+<% } else { %>
+    <div class="alert alert-info">
+        <p>No symbols found. The Binance API may be unavailable or returned an empty list.</p>
+        <form action="/symbols" method="GET">
+            <button type="submit" class="refresh-btn">Try Again</button>
+        </form>
+    </div>
+<% } %>
