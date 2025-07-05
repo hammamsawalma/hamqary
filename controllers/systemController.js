@@ -5,6 +5,17 @@
 
 const { MongoClient } = require('mongodb');
 
+// Global system state management
+let systemState = {
+    cronJobs: new Map(),
+    activeIntervals: [],
+    activeTimeouts: [],
+    isSystemRunning: true
+};
+
+// Export system state for other modules to register their processes
+global.systemState = systemState;
+
 /**
  * Display system control panel
  * @param {Object} req - Express request object
@@ -28,49 +39,127 @@ async function systemControlPanel(req, res) {
 }
 
 /**
- * Stop system operations
- * @param {Object} req - Express request object
+ * Stop system operations - Complete process termination
+ * @param {Object} req - Express request object  
  * @param {Object} res - Express response object
  */
 async function stopSystem(req, res) {
     try {
-        console.log('🛑 System stop requested');
+        console.log('🛑 Complete system stop requested');
         
-        // Stop all cron jobs by clearing intervals
-        // Note: In a production system, you'd want to implement proper job management
-        if (global.cronJobs) {
-            Object.values(global.cronJobs).forEach(job => {
-                if (job && job.stop) {
-                    job.stop();
-                }
-            });
+        // Perform complete system shutdown
+        await performCompleteSystemStop();
+        
+        console.log('✅ Complete system stopped successfully');
+        
+        if (res) {
+            res.json({ success: true, message: 'Complete system stopped successfully' });
         }
-        
-        // Clear any active intervals
-        if (global.activeIntervals) {
-            global.activeIntervals.forEach(intervalId => {
-                clearInterval(intervalId);
-            });
-            global.activeIntervals = [];
-        }
-        
-        console.log('✅ System stopped successfully');
-        res.json({ success: true, message: 'System stopped successfully' });
         
     } catch (error) {
         console.error('❌ Error stopping system:', error);
-        res.status(500).json({ success: false, message: error.message });
+        if (res) {
+            res.status(500).json({ success: false, message: error.message });
+        }
     }
 }
 
 /**
- * Reset system - Drop all database collections
+ * Perform complete system stop - Internal function
+ */
+async function performCompleteSystemStop() {
+    console.log('🔄 Performing complete system shutdown...');
+    
+    // Stop all registered cron jobs
+    if (systemState.cronJobs && systemState.cronJobs.size > 0) {
+        console.log(`🛑 Stopping ${systemState.cronJobs.size} cron jobs...`);
+        systemState.cronJobs.forEach((job, name) => {
+            try {
+                if (job && typeof job.stop === 'function') {
+                    job.stop();
+                    console.log(`✅ Stopped cron job: ${name}`);
+                } else if (job && typeof job.destroy === 'function') {
+                    job.destroy();
+                    console.log(`✅ Destroyed cron job: ${name}`);
+                }
+            } catch (error) {
+                console.error(`❌ Error stopping cron job ${name}:`, error);
+            }
+        });
+        systemState.cronJobs.clear();
+    }
+    
+    // Clear all active intervals
+    if (systemState.activeIntervals && systemState.activeIntervals.length > 0) {
+        console.log(`🛑 Clearing ${systemState.activeIntervals.length} active intervals...`);
+        systemState.activeIntervals.forEach(intervalId => {
+            try {
+                clearInterval(intervalId);
+            } catch (error) {
+                console.error('❌ Error clearing interval:', error);
+            }
+        });
+        systemState.activeIntervals = [];
+    }
+    
+    // Clear all active timeouts
+    if (systemState.activeTimeouts && systemState.activeTimeouts.length > 0) {
+        console.log(`🛑 Clearing ${systemState.activeTimeouts.length} active timeouts...`);
+        systemState.activeTimeouts.forEach(timeoutId => {
+            try {
+                clearTimeout(timeoutId);
+            } catch (error) {
+                console.error('❌ Error clearing timeout:', error);
+            }
+        });
+        systemState.activeTimeouts = [];
+    }
+    
+    // Stop legacy global cron jobs (backward compatibility)
+    if (global.cronJobs) {
+        console.log('🛑 Stopping legacy global cron jobs...');
+        Object.values(global.cronJobs).forEach(job => {
+            try {
+                if (job && typeof job.stop === 'function') {
+                    job.stop();
+                } else if (job && typeof job.destroy === 'function') {
+                    job.destroy();
+                }
+            } catch (error) {
+                console.error('❌ Error stopping legacy cron job:', error);
+            }
+        });
+        global.cronJobs = {};
+    }
+    
+    // Clear legacy active intervals
+    if (global.activeIntervals) {
+        console.log('🛑 Clearing legacy active intervals...');
+        global.activeIntervals.forEach(intervalId => {
+            try {
+                clearInterval(intervalId);
+            } catch (error) {
+                console.error('❌ Error clearing legacy interval:', error);
+            }
+        });
+        global.activeIntervals = [];
+    }
+    
+    // Reset system running state
+    systemState.isSystemRunning = false;
+    
+    console.log('🛑 Complete system shutdown finished');
+}
+
+/**
+ * Reset system - Complete system and database reset
  * @param {Object} req - Express request object
  * @param {Object} res - Express response object
  */
 async function resetSystem(req, res) {
     try {
-        console.log('🔄 System reset requested');
+        console.log('🔄 COMPLETE SYSTEM RESET REQUESTED');
+        console.log('⚠️ This will stop ALL processes and drop the ENTIRE database');
         
         // Get MongoDB client
         const client = req.app.locals.client;
@@ -80,36 +169,62 @@ async function resetSystem(req, res) {
             throw new Error('Database connection not available');
         }
         
+        // STEP 1: First, completely stop all system processes
+        console.log('🛑 STEP 1: Stopping all system processes...');
+        await performCompleteSystemStop();
+        
+        // STEP 2: Drop the ENTIRE database (not just collections)
+        console.log('🗑️ STEP 2: Dropping entire database...');
         const db = client.db(dbName);
         
-        // Get all collections
-        const collections = await db.listCollections().toArray();
-        console.log(`📊 Found ${collections.length} collections to drop`);
-        
-        // Drop all collections
-        for (const collection of collections) {
-            try {
-                await db.collection(collection.name).drop();
-                console.log(`🗑️ Dropped collection: ${collection.name}`);
-            } catch (error) {
-                if (error.message.includes('ns not found')) {
-                    // Collection already doesn't exist, ignore
-                    console.log(`ℹ️ Collection ${collection.name} already doesn't exist`);
-                } else {
-                    console.error(`❌ Error dropping collection ${collection.name}:`, error.message);
-                }
-            }
+        try {
+            // Get database stats before dropping
+            const stats = await db.stats();
+            const collectionsCount = stats.collections || 0;
+            const documentsCount = stats.objects || 0;
+            
+            console.log(`📊 Database '${dbName}' contains:`);
+            console.log(`   └── Collections: ${collectionsCount}`);
+            console.log(`   └── Documents: ${documentsCount}`);
+            
+            // Drop the ENTIRE database
+            const result = await db.dropDatabase();
+            console.log(`🗑️ ENTIRE DATABASE '${dbName}' DROPPED SUCCESSFULLY`);
+            console.log(`   └── Result: ${JSON.stringify(result)}`);
+            
+        } catch (dbError) {
+            // If database doesn't exist or other error, still continue
+            console.log(`ℹ️ Database '${dbName}' may not exist or already empty:`, dbError.message);
         }
         
-        console.log('✅ Database reset completed successfully');
+        // STEP 3: Reset all system states to fresh startup conditions
+        console.log('🔄 STEP 3: Resetting system state...');
+        systemState = {
+            cronJobs: new Map(),
+            activeIntervals: [],
+            activeTimeouts: [],
+            isSystemRunning: false  // Mark as stopped after reset
+        };
+        global.systemState = systemState;
+        
+        // Clear any remaining global state
+        if (global.cronJobs) global.cronJobs = {};
+        if (global.activeIntervals) global.activeIntervals = [];
+        
+        console.log('✅ COMPLETE SYSTEM RESET FINISHED');
+        console.log('🎯 System is now in a fresh state - ready for new symbol selection');
+        
         res.json({ 
             success: true, 
-            message: `Successfully reset database. Dropped ${collections.length} collections.` 
+            message: `Complete system reset successful. Database '${dbName}' has been completely removed and all processes stopped. System is ready for fresh startup.` 
         });
         
     } catch (error) {
-        console.error('❌ Error resetting system:', error);
-        res.status(500).json({ success: false, message: error.message });
+        console.error('❌ Error in complete system reset:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: `System reset failed: ${error.message}` 
+        });
     }
 }
 

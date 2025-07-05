@@ -78,7 +78,7 @@ function setupCandleDataCronJob(client, dbName) {
     const artificialDataIntervals = ['2m', '4m', '6m', '7m', '8m', '9m', '10m', '11m', '12m', '13m', '14m', '16m', '17m', '18m', '19m', '20m']; // Custom intervals
     
     // Schedule the job to run every minute with execution guard
-    cron.schedule('* * * * *', async () => {
+    const candleDataJob = cron.schedule('* * * * *', async () => {
         // Check if previous job is still running
         if (jobStatus.candleDataJob.running) {
             console.log('⚠️ Candle data job is still running, skipping this execution');
@@ -117,7 +117,17 @@ function setupCandleDataCronJob(client, dbName) {
         } finally {
             jobStatus.candleDataJob.running = false;
         }
+    }, {
+        scheduled: false // Don't start immediately
     });
+    
+    // Register the job with system state for proper cleanup
+    if (global.systemState) {
+        global.systemState.cronJobs.set('candleDataJob', candleDataJob);
+    }
+    
+    // Start the job
+    candleDataJob.start();
     
     console.log(`✅ Candle data cron job scheduled to run every minute for intervals: ${realDataIntervals.join(', ')}`);
 }
@@ -147,7 +157,7 @@ function setupArtificialCandleDataCronJobs(client, dbName) {
     };
     
     // Single cron job that checks all intervals and queues them for processing
-    cron.schedule('* * * * *', async () => {
+    const artificialCandleJob = cron.schedule('* * * * *', async () => {
         // Check if artificial candle jobs are already running
         if (jobStatus.artificialCandleJobs.running) {
             console.log('⚠️ Artificial candle jobs are still running, skipping this execution');
@@ -177,7 +187,17 @@ function setupArtificialCandleDataCronJobs(client, dbName) {
         if (!processingQueue) {
             processArtificialCandleQueue(client, dbName);
         }
+    }, {
+        scheduled: false // Don't start immediately
     });
+    
+    // Register the job with system state for proper cleanup
+    if (global.systemState) {
+        global.systemState.cronJobs.set('artificialCandleJob', artificialCandleJob);
+    }
+    
+    // Start the job
+    artificialCandleJob.start();
     
     console.log(`✅ Consolidated artificial candle data cron job scheduled for intervals: ${intervals.join(', ')}`);
 }
@@ -366,9 +386,19 @@ function logCronJobStatus() {
  */
 function setupMonitoringCronJob() {
     // Log status every 5 minutes
-    cron.schedule('*/5 * * * *', () => {
+    const monitoringJob = cron.schedule('*/5 * * * *', () => {
         logCronJobStatus();
+    }, {
+        scheduled: false // Don't start immediately
     });
+    
+    // Register the job with system state for proper cleanup
+    if (global.systemState) {
+        global.systemState.cronJobs.set('monitoringJob', monitoringJob);
+    }
+    
+    // Start the job
+    monitoringJob.start();
     
     console.log('✅ Monitoring cron job scheduled to run every 5 minutes');
 }
@@ -387,7 +417,7 @@ function setupDataCleanupCronJob(client, dbName) {
     console.log('🧹 Setting up data cleanup cron job...');
     
     // Schedule cleanup to run every hour
-    cron.schedule('0 * * * *', async () => {
+    const cleanupJob = cron.schedule('0 * * * *', async () => {
         try {
             console.log('\n🧹 Running scheduled data cleanup...');
             const result = await performDataCleanup(client, dbName);
@@ -400,7 +430,17 @@ function setupDataCleanupCronJob(client, dbName) {
         } catch (error) {
             console.error('❌ Scheduled data cleanup failed:', error);
         }
+    }, {
+        scheduled: false // Don't start immediately
     });
+    
+    // Register the job with system state for proper cleanup
+    if (global.systemState) {
+        global.systemState.cronJobs.set('dataCleanupJob', cleanupJob);
+    }
+    
+    // Start the job
+    cleanupJob.start();
     
     console.log('✅ Data cleanup cron job scheduled to run every hour');
 }

@@ -92,15 +92,41 @@ async function symbolsSelectController(req, res) {
             selectedSymbols = [selectedSymbols];
         }
         
+        console.log(`🎯 Symbol selection requested: ${selectedSymbols.length} symbols`);
+        
+        // Check if system was recently reset (database is empty or system is not running)
+        const db = client.db(dbName);
+        const collections = await db.listCollections().toArray();
+        const systemWasReset = collections.length === 0 || !global.systemState?.isSystemRunning;
+        
+        if (systemWasReset) {
+            console.log('🔄 System was reset - treating as fresh startup');
+            console.log('🚀 Initializing fresh system state...');
+            
+            // Reset system state to fresh startup condition
+            global.systemState = {
+                cronJobs: new Map(),
+                activeIntervals: [],
+                activeTimeouts: [],
+                isSystemRunning: true
+            };
+        }
+        
         // Store in MongoDB
         const { isFirstSelection } = await saveSelectedSymbols(client, dbName, selectedSymbols);
         
-        // If this is the first time symbols are selected, load historical data
-        if (isFirstSelection && selectedSymbols.length > 0) {
+        // After reset, ALWAYS treat as first selection to trigger complete fresh startup
+        const treatAsFirstSelection = systemWasReset || isFirstSelection;
+        
+        if (treatAsFirstSelection && selectedSymbols.length > 0) {
+            console.log('🚀 Starting fresh system with new symbols...');
+            console.log(`   └── Symbols: ${selectedSymbols.join(', ')}`);
+            console.log('   └── Loading historical data and starting all processes...');
+            
             // We don't await this to avoid blocking the response
-            handleFirstTimeSymbolSelection(client, dbName, selectedSymbols, isFirstSelection)
+            handleFirstTimeSymbolSelection(client, dbName, selectedSymbols, true)
                 .catch(error => {
-                    console.error('❌ Error in historical data loading:', error);
+                    console.error('❌ Error in fresh system startup:', error);
                 });
         }
         
