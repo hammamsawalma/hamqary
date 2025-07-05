@@ -5,7 +5,15 @@
   "scripts": {
     "start": "node index.js",
     "playground": "node playground.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:stop": "pm2 stop hamqary",
+    "pm2:restart": "pm2 restart hamqary",
+    "pm2:reload": "pm2 reload hamqary",
+    "pm2:delete": "pm2 delete hamqary",
+    "pm2:logs": "pm2 logs hamqary",
+    "pm2:status": "pm2 status",
+    "pm2:monit": "pm2 monit"
   },
   "keywords": [],
   "author": "",

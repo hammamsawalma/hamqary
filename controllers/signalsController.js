@@ -718,7 +718,7 @@ function generateSignalsDashboard(viewData) {
                             
                             <div class="control-group">
                                 <button type="button" id="resetSymbolsBtn" class="btn btn-danger">
-                                    🔄 Reset Symbols
+                                    ⚠️ Reset System
                                 </button>
                             </div>
                         </form>
@@ -943,15 +943,15 @@ function generateSignalsDashboard(viewData) {
                     submitForm();
                 });
                 
-                // Reset symbols functionality
+                // Complete system reset functionality
                 document.getElementById('resetSymbolsBtn').addEventListener('click', function() {
-                    if (confirm('🔄 Reset All Tracked Symbols?\\n\\nThis will clear all selected symbols and you will need to choose new ones.\\n\\nAre you sure you want to continue?')) {
+                    if (confirm('⚠️ COMPLETE SYSTEM RESET\\n\\nThis will permanently delete ALL data including:\\n• Selected symbols\\n• Candle data\\n• Trading signals\\n• Volume footprints\\n• All historical data\\n\\nThe system will start completely fresh like a new installation.\\n\\nThis action cannot be undone!\\n\\nAre you sure you want to continue?')) {
                         // Show loading state
-                        this.textContent = 'Resetting...';
+                        this.textContent = 'Resetting System...';
                         this.disabled = true;
                         
-                        // Send reset request
-                        fetch('/symbols/reset', {
+                        // Send complete system reset request
+                        fetch('/system/reset', {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json'
@@ -960,20 +960,20 @@ function generateSignalsDashboard(viewData) {
                         .then(response => response.json())
                         .then(data => {
                             if (data.success) {
-                                alert('✅ ' + data.message + '\\n\\nRedirecting to symbol selection...');
+                                alert('✅ ' + data.message + '\\n\\nSystem has been completely reset!\\n\\nRedirecting to symbol selection to start fresh...');
                                 window.location.href = '/symbols';
                             } else {
                                 alert('❌ ' + data.message);
                                 // Reset button state
-                                this.textContent = '🔄 Reset Symbols';
+                                this.textContent = '🔄 Reset System';
                                 this.disabled = false;
                             }
                         })
                         .catch(error => {
-                            console.error('Error resetting symbols:', error);
-                            alert('❌ Error resetting symbols: ' + error.message);
+                            console.error('Error resetting system:', error);
+                            alert('❌ Error resetting system: ' + error.message);
                             // Reset button state
-                            this.textContent = '🔄 Reset Symbols';
+                            this.textContent = '🔄 Reset System';
                             this.disabled = false;
                         });
                     }

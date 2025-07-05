@@ -89,8 +89,14 @@ tmp/
 temp/
 
 # Logs
-logs
+logs/
 *.log
+
+# PM2 logs and process files
+.pm2/
+pids/
+*.pid
+ecosystem.config.js.backup
 
 # Runtime data
 pids

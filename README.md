@@ -299,22 +299,102 @@ MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net/
 // Set up proper user roles and permissions
 ```
 
-## 🚀 Deployment
+## 🚀 Production Deployment
 
-### Local Deployment
+### 📦 **PM2 Process Management (Recommended)**
 
+**Hamqary includes complete PM2 configuration for reliable production deployment with zero-downtime and automatic restarts.**
+
+#### **1. Install PM2 Globally**
 ```bash
-# Install PM2 for process management
+# Install PM2 globally
 npm install -g pm2
 
-# Start application with PM2
-pm2 start index.js --name hamqary
-
-# Monitor application
-pm2 monitor
+# Verify PM2 installation
+pm2 --version
 ```
 
-### Cloud Deployment (Heroku)
+#### **2. Start Application with PM2**
+```bash
+# Start Hamqary using ecosystem configuration
+npm run pm2:start
+
+# Or directly with PM2
+pm2 start ecosystem.config.js
+```
+
+#### **3. PM2 Management Commands**
+```bash
+# Check application status
+npm run pm2:status
+# or: pm2 status
+
+# View logs in real-time
+npm run pm2:logs
+# or: pm2 logs hamqary
+
+# Restart application (zero-downtime)
+npm run pm2:restart
+# or: pm2 restart hamqary
+
+# Reload application (graceful restart)
+npm run pm2:reload
+# or: pm2 reload hamqary
+
+# Stop application
+npm run pm2:stop
+# or: pm2 stop hamqary
+
+# Remove from PM2 process list
+npm run pm2:delete
+# or: pm2 delete hamqary
+
+# Monitor CPU/Memory usage
+npm run pm2:monit
+# or: pm2 monit
+```
+
+#### **4. PM2 Startup (Auto-Start on Boot)**
+```bash
+# Generate startup script
+pm2 startup
+
+# Save current process list
+pm2 save
+
+# Your application will now start automatically on system boot
+```
+
+#### **5. PM2 Features Included**
+- ✅ **Auto-restart** on crashes
+- ✅ **Memory monitoring** (restarts if >1GB)
+- ✅ **Log management** with rotation
+- ✅ **Zero-downtime restarts**
+- ✅ **Process monitoring**
+- ✅ **Graceful shutdowns**
+- ✅ **Error handling** with retry limits
+
+#### **6. Log Files**
+```bash
+# Log locations (created automatically)
+./logs/combined.log    # Combined output
+./logs/out.log         # Standard output
+./logs/error.log       # Error logs
+
+# View logs
+pm2 logs hamqary --lines 100
+```
+
+### 🔧 **Local Development**
+```bash
+# Standard Node.js development
+npm start
+
+# For development with file watching
+# Edit ecosystem.config.js and set watch: true
+```
+
+### ☁️ **Cloud Deployment (Heroku)**
 
 ```bash
 # Create Heroku app
@@ -330,16 +410,61 @@ heroku config:set NODE_ENV=production
 git push heroku main
 ```
 
-### Docker Deployment
+### 🐳 **Docker Deployment**
 
 ```dockerfile
-FROM node:16-alpine
+FROM node:18-alpine
 WORKDIR /app
+
+# Install PM2 globally
+RUN npm install -g pm2
+
+# Copy package files
 COPY package*.json ./
+COPY ecosystem.config.js ./
+
+# Install dependencies
 RUN npm ci --only=production
+
+# Copy application code
 COPY . .
+
+# Create logs directory
+RUN mkdir -p logs
+
+# Expose port
 EXPOSE 3000
-CMD ["node", "index.js"]
+
+# Start with PM2
+CMD ["pm2-runtime", "ecosystem.config.js"]
+```
+
+### 🖥️ **VPS/Server Deployment**
+
+```bash
+# 1. Clone repository
+git clone https://github.com/hammamsawalma/hamqary.git
+cd hamqary
+
+# 2. Install dependencies
+npm install
+
+# 3. Configure environment
+cp .env.example .env
+# Edit .env with your MongoDB connection
+
+# 4. Install PM2 globally
+npm install -g pm2
+
+# 5. Start with PM2
+npm run pm2:start
+
+# 6. Setup auto-start on boot
+pm2 startup
+pm2 save
+
+# 7. Optional: Setup nginx reverse proxy
+# Configure nginx to proxy port 3000
 ```
 
 ## 🤝 Contributing
