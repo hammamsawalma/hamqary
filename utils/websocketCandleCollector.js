@@ -12,16 +12,24 @@ class WebSocketCandleCollector {
         this.ws = null;
         this.isConnected = false;
         this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = options.maxReconnectAttempts || 10;
-        this.reconnectDelay = options.reconnectDelay || 5000;
+        this.maxReconnectAttempts = options.maxReconnectAttempts || 50; // Increased for better resilience
+        this.reconnectDelay = options.reconnectDelay || 1000; // Start with 1s, not 5s
+        this.maxReconnectDelay = options.maxReconnectDelay || 30000; // Cap at 30s
         
-        // Track subscribed symbols
+        // Track subscribed symbols with persistence
         this.subscribedSymbols = new Set();
+        this.persistedSymbols = []; // Store symbols for reconnection independence
         
         // Track last received candle timestamps per symbol (for gap detection)
         this.lastCandleTimestamps = new Map();
         this.disconnectionTime = null;
         this.reconnectionTime = null;
+        
+        // Connection health monitoring
+        this.lastMessageTime = null;
+        this.connectionHealthTimer = null;
+        this.healthCheckInterval = options.healthCheckInterval || 60000; // 1 minute
+        this.maxSilentTime = options.maxSilentTime || 120000; // 2 minutes before considering unhealthy
         
         // Event callbacks
         this.onClosedCandleCallback = options.onClosedCandle || null;
@@ -30,9 +38,15 @@ class WebSocketCandleCollector {
         this.onDisconnectCallback = options.onDisconnect || null;
         this.onGapDetectedCallback = options.onGapDetected || null;
         
-        // Heartbeat
+        // Heartbeat with improved handling
         this.heartbeatInterval = null;
-        this.heartbeatTimeout = options.heartbeatTimeout || 30000;
+        this.heartbeatTimeout = options.heartbeatTimeout || 20000; // More frequent heartbeat
+        this.pongReceived = true; // Track pong responses
+        
+        // Reconnection state management
+        this.isReconnecting = false;
+        this.reconnectTimer = null;
+        this.shouldReconnect = true; // Flag to control reconnection behavior
         
         // Statistics
         this.stats = {
@@ -42,10 +56,13 @@ class WebSocketCandleCollector {
             lastCandleTime: null,
             errors: 0,
             gapsDetected: 0,
-            gapsRecovered: 0
+            gapsRecovered: 0,
+            reconnectionCount: 0,
+            totalDowntime: 0,
+            lastHealthCheck: null
         };
         
-        console.log('📊 WebSocket Candlestick Collector initialized');
+        console.log('📊 WebSocket Candlestick Collector initialized with enhanced reliability');
     }
 
     /**
@@ -66,17 +83,22 @@ class WebSocketCandleCollector {
             this.ws.on('open', () => {
                 console.log('✅ WebSocket connected to Binance for candlestick streams');
                 this.isConnected = true;
+                this.isReconnecting = false;
                 this.reconnectAttempts = 0;
                 this.stats.connectedAt = new Date();
+                this.lastMessageTime = new Date(); // Initialize message tracking
                 this.startHeartbeat();
                 
-                // Immediately subscribe to initial symbols to prevent 400 errors
+                // Persist symbols for reconnection reliability
                 if (initialSymbols && initialSymbols.length > 0) {
+                    this.persistedSymbols = [...initialSymbols];
                     console.log(`📊 Immediately subscribing to ${initialSymbols.length} streams after connection...`);
                     
                     // Subscribe to all symbols right after connection
                     setTimeout(() => {
                         this.subscribeToSymbols(initialSymbols);
+                        // Start health monitoring after subscriptions
+                        this.startConnectionHealthMonitoring();
                     }, 100); // Small delay to ensure connection is fully established
                 }
                 
@@ -125,6 +147,9 @@ class WebSocketCandleCollector {
      */
     handleMessage(data) {
         try {
+            // Update last message time for health monitoring
+            this.lastMessageTime = new Date();
+            
             const message = JSON.parse(data);
             
             // Handle kline/candlestick data
@@ -293,6 +318,10 @@ class WebSocketCandleCollector {
             this.subscribeToSymbol(symbol);
         }
         
+        // Update persisted symbols for reconnection reliability
+        this.persistedSymbols = [...newSymbols];
+        console.log(`📊 Updated persisted symbols: ${this.persistedSymbols.length} symbols`);
+        
         return {
             added: symbolsToAdd.length,
             removed: symbolsToRemove.length,
@@ -339,49 +368,200 @@ class WebSocketCandleCollector {
     }
 
     /**
-     * Handle reconnection logic
+     * Handle reconnection logic - FIXED to prevent infinite recursion
      */
     async handleReconnection() {
-        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            console.error(`❌ Max reconnection attempts (${this.maxReconnectAttempts}) reached for candlestick WebSocket`);
+        // Prevent multiple concurrent reconnection attempts
+        if (this.isReconnecting) {
+            console.log('🔄 Reconnection already in progress, skipping duplicate attempt');
             return;
         }
 
+        if (!this.shouldReconnect) {
+            console.log('🛑 Reconnection disabled, not attempting to reconnect');
+            return;
+        }
+
+        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+            console.error(`❌ Max reconnection attempts (${this.maxReconnectAttempts}) reached for candlestick WebSocket`);
+            console.log('🔄 Will retry in 5 minutes...');
+            
+            // Reset attempts after 5 minutes for long-term resilience
+            setTimeout(() => {
+                console.log('🔄 Resetting reconnection attempts for long-term resilience');
+                this.reconnectAttempts = 0;
+                if (this.shouldReconnect && !this.isConnected) {
+                    this.handleReconnection();
+                }
+            }, 300000); // 5 minutes
+            return;
+        }
+
+        this.isReconnecting = true;
         this.reconnectAttempts++;
-        const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1); // Exponential backoff
+        this.stats.reconnectionCount++;
+        
+        // Calculate delay with exponential backoff but cap it
+        const delay = Math.min(
+            this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1),
+            this.maxReconnectDelay
+        );
         
         console.log(`🔄 Attempting candlestick WebSocket reconnection ${this.reconnectAttempts}/${this.maxReconnectAttempts} in ${delay}ms...`);
         
-        setTimeout(async () => {
+        // Clear any existing reconnect timer
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+        }
+
+        this.reconnectTimer = setTimeout(async () => {
             try {
-                // Get current symbols from database before reconnecting
-                const currentSymbols = await this.getCurrentSymbolsFromDatabase();
+                await this.attemptReconnection();
+            } catch (error) {
+                console.error('❌ Reconnection attempt failed:', error);
+            } finally {
+                this.isReconnecting = false;
                 
-                if (currentSymbols.length === 0) {
-                    console.log(`⚠️ No symbols found in database, skipping WebSocket reconnection attempt ${this.reconnectAttempts}`);
-                    // Still continue trying in case symbols are added later
+                // Schedule next attempt if still not connected
+                if (!this.isConnected && this.shouldReconnect) {
                     this.handleReconnection();
-                    return;
                 }
+            }
+        }, delay);
+    }
+
+    /**
+     * Attempt to reconnect with improved logic
+     */
+    async attemptReconnection() {
+        console.log('🔗 Starting reconnection attempt...');
+        
+        try {
+            // Use persisted symbols first, then try database
+            let symbolsToReconnect = [...this.persistedSymbols];
+            
+            if (symbolsToReconnect.length === 0) {
+                console.log('📊 No persisted symbols found, trying database...');
+                symbolsToReconnect = await this.getCurrentSymbolsFromDatabase();
+            }
+            
+            if (symbolsToReconnect.length === 0) {
+                console.log('⚠️ No symbols available for reconnection - will retry later');
+                // Don't call handleReconnection() again here - let the timeout in handleReconnection() handle it
+                return;
+            }
+            
+            console.log(`📊 Reconnecting with ${symbolsToReconnect.length} symbols: ${symbolsToReconnect.slice(0, 3).join(', ')}${symbolsToReconnect.length > 3 ? '...' : ''}`);
+            
+            // Store symbols for this reconnection attempt
+            this.persistedSymbols = symbolsToReconnect;
+            
+            // Clean up existing connection
+            if (this.ws) {
+                this.ws.removeAllListeners();
+                this.ws.terminate();
+                this.ws = null;
+            }
+            
+            // Attempt new connection
+            await this.connect(symbolsToReconnect);
+            
+            if (this.isConnected) {
+                console.log(`✅ Successfully reconnected with ${this.subscribedSymbols.size} active subscriptions`);
                 
-                console.log(`📊 Found ${currentSymbols.length} symbols in database for reconnection: ${currentSymbols.slice(0, 3).join(', ')}${currentSymbols.length > 3 ? '...' : ''}`);
-                
-                await this.connect(currentSymbols);
-                
-                // Clear old symbols as they will be set during connection
-                this.subscribedSymbols.clear();
-                
-                console.log(`✅ Reconnected and resubscribed to ${this.subscribedSymbols.size} candlestick streams`);
+                // Reset reconnection tracking on success
+                this.isReconnecting = false;
+                this.reconnectAttempts = 0;
                 
                 // Mark reconnection time and detect gaps
                 this.reconnectionTime = new Date();
-                await this.detectAndHandleDataGaps(currentSymbols);
+                await this.detectAndHandleDataGaps(symbolsToReconnect);
                 
-            } catch (error) {
-                console.error('❌ Candlestick WebSocket reconnection failed:', error);
-                this.handleReconnection();
+                // Start connection health monitoring
+                this.startConnectionHealthMonitoring();
+                
+            } else {
+                throw new Error('Connection established but not marked as connected');
             }
-        }, delay);
+            
+        } catch (error) {
+            console.error('❌ Reconnection attempt failed:', error);
+            this.stats.errors++;
+            throw error; // Re-throw to trigger retry logic
+        }
+    }
+
+    /**
+     * Start connection health monitoring
+     */
+    startConnectionHealthMonitoring() {
+        if (this.connectionHealthTimer) {
+            clearInterval(this.connectionHealthTimer);
+        }
+
+        this.connectionHealthTimer = setInterval(() => {
+            this.checkConnectionHealth();
+        }, this.healthCheckInterval);
+        
+        this.stats.lastHealthCheck = new Date();
+        console.log('💗 Connection health monitoring started');
+    }
+
+    /**
+     * Check connection health and force reconnection if needed
+     */
+    checkConnectionHealth() {
+        const now = new Date();
+        this.stats.lastHealthCheck = now;
+
+        if (!this.isConnected) {
+            console.log('💔 Health check: Connection not active');
+            return;
+        }
+
+        // Check if we've received messages recently
+        if (this.lastMessageTime) {
+            const timeSinceLastMessage = now.getTime() - this.lastMessageTime.getTime();
+            
+            if (timeSinceLastMessage > this.maxSilentTime) {
+                console.warn(`⚠️ Connection health issue: No messages for ${Math.floor(timeSinceLastMessage / 1000)}s`);
+                console.log('🔄 Forcing reconnection due to silent connection...');
+                
+                this.forceReconnection('Silent connection detected');
+                return;
+            }
+        }
+
+        // Check WebSocket state
+        if (this.ws && this.ws.readyState !== WebSocket.OPEN) {
+            console.warn('⚠️ Connection health issue: WebSocket not in OPEN state');
+            this.forceReconnection('WebSocket state not OPEN');
+            return;
+        }
+
+        console.log('💚 Connection health check passed');
+    }
+
+    /**
+     * Force reconnection (for health issues)
+     */
+    forceReconnection(reason) {
+        console.log(`🚨 Forcing reconnection: ${reason}`);
+        
+        this.isConnected = false;
+        this.disconnectionTime = new Date();
+        
+        if (this.ws) {
+            this.ws.removeAllListeners();
+            this.ws.terminate();
+            this.ws = null;
+        }
+        
+        this.stopHeartbeat();
+        
+        // Reset attempts for forced reconnection
+        this.reconnectAttempts = 0;
+        this.handleReconnection();
     }
 
     /**
@@ -607,12 +787,32 @@ class WebSocketCandleCollector {
     }
 
     /**
+     * Stop connection health monitoring
+     */
+    stopConnectionHealthMonitoring() {
+        if (this.connectionHealthTimer) {
+            clearInterval(this.connectionHealthTimer);
+            this.connectionHealthTimer = null;
+            console.log('💔 Connection health monitoring stopped');
+        }
+    }
+
+    /**
      * Disconnect from WebSocket
      */
     disconnect() {
         console.log('🔌 Disconnecting candlestick WebSocket...');
         
+        // Stop all monitoring and timers
+        this.shouldReconnect = false; // Disable reconnection
         this.stopHeartbeat();
+        this.stopConnectionHealthMonitoring();
+        
+        // Clear reconnection timer
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
         
         // Close WebSocket connection
         if (this.ws) {
@@ -621,6 +821,7 @@ class WebSocketCandleCollector {
         }
         
         this.isConnected = false;
+        this.isReconnecting = false;
         this.subscribedSymbols.clear();
         
         console.log('✅ Candlestick WebSocket disconnected');
@@ -632,15 +833,31 @@ class WebSocketCandleCollector {
     forceCleanup() {
         console.log('🧹 Force cleaning up candlestick WebSocket collector...');
         
-        this.subscribedSymbols.clear();
+        // Stop all monitoring and timers
+        this.shouldReconnect = false;
         this.stopHeartbeat();
+        this.stopConnectionHealthMonitoring();
         
+        // Clear all timers
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        
+        // Clear state
+        this.subscribedSymbols.clear();
+        this.persistedSymbols = [];
+        this.lastCandleTimestamps.clear();
+        
+        // Force close WebSocket
         if (this.ws) {
+            this.ws.removeAllListeners();
             this.ws.terminate(); // Force close
             this.ws = null;
         }
         
         this.isConnected = false;
+        this.isReconnecting = false;
         console.log('✅ Candlestick WebSocket force cleanup completed');
     }
 }
