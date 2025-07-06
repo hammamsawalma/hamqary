@@ -8,7 +8,7 @@ const WebSocket = require('ws');
 
 class WebSocketCandleCollector {
     constructor(options = {}) {
-        this.baseUrl = 'wss://fstream.binance.com/ws/';
+        this.baseUrl = 'wss://fstream.binance.com/ws';
         this.ws = null;
         this.isConnected = false;
         this.reconnectAttempts = 0;
@@ -69,88 +69,103 @@ class WebSocketCandleCollector {
      * Connect to Binance WebSocket with initial symbols
      */
     async connect(initialSymbols = []) {
-        try {
-            // Validate that we have symbols to subscribe to
-            if (initialSymbols.length === 0) {
-                console.log('⚠️ No symbols provided for WebSocket connection, skipping connection');
-                return false;
-            }
-            
-            console.log(`🔗 Connecting to Binance WebSocket for ${initialSymbols.length} symbols...`);
-            
-            this.ws = new WebSocket(this.baseUrl);
-            
-            this.ws.on('open', () => {
-                console.log('✅ WebSocket connected to Binance for candlestick streams');
-                this.isConnected = true;
-                this.isReconnecting = false;
-                this.reconnectAttempts = 0;
-                this.stats.connectedAt = new Date();
-                this.lastMessageTime = new Date(); // Initialize message tracking
-                this.setupPingPongHandling(); // Set up proper ping/pong according to Binance docs
+        return new Promise((resolve, reject) => {
+            try {
+                // Validate that we have symbols to subscribe to
+                if (initialSymbols.length === 0) {
+                    console.log('⚠️ No symbols provided for WebSocket connection, skipping connection');
+                    resolve(false);
+                    return;
+                }
                 
-                // Persist symbols for reconnection reliability
-                if (initialSymbols && initialSymbols.length > 0) {
-                    this.persistedSymbols = [...initialSymbols];
-                    console.log(`📊 Immediately subscribing to ${initialSymbols.length} streams after connection...`);
+                console.log(`🔗 Connecting to Binance WebSocket for ${initialSymbols.length} symbols...`);
+                
+                // Set up connection timeout
+                const connectionTimeout = setTimeout(() => {
+                    reject(new Error('WebSocket connection timeout after 10 seconds'));
+                }, 10000);
+                
+                this.ws = new WebSocket(this.baseUrl);
+                
+                this.ws.on('open', () => {
+                    clearTimeout(connectionTimeout);
+                    console.log('✅ WebSocket connected to Binance for candlestick streams');
+                    this.isConnected = true;
+                    this.isReconnecting = false;
+                    this.reconnectAttempts = 0;
+                    this.stats.connectedAt = new Date();
+                    this.lastMessageTime = new Date(); // Initialize message tracking
+                    this.setupPingPongHandling(); // Set up proper ping/pong according to Binance docs
                     
-                    // Subscribe to all symbols after ensuring connection is ready
-                    setTimeout(() => {
-                        if (this.isConnectionReady()) {
-                            this.subscribeToSymbols(initialSymbols);
-                            // Start health monitoring after subscriptions
+                    // Persist symbols for reconnection reliability
+                    if (initialSymbols && initialSymbols.length > 0) {
+                        this.persistedSymbols = [...initialSymbols];
+                        console.log(`📊 Subscribing to ${initialSymbols.length} streams after connection...`);
+                        
+                        // Subscribe to all symbols immediately since connection is ready
+                        const subscribeResults = this.subscribeToSymbols(initialSymbols);
+                        const successCount = subscribeResults.filter(r => r.success).length;
+                        
+                        if (successCount > 0) {
+                            console.log(`✅ Successfully subscribed to ${successCount} streams`);
+                            // Start health monitoring after successful subscriptions
                             this.startConnectionHealthMonitoring();
-                        } else {
-                            console.warn('⚠️ Connection not ready for subscriptions, will retry...');
-                            this.handleConnectionNotReady(initialSymbols);
                         }
-                    }, 500); // Increased delay to ensure connection is fully established
-                }
+                    }
+                    
+                    if (this.onConnectCallback) {
+                        this.onConnectCallback();
+                    }
+                    
+                    // Resolve the promise after connection is fully established
+                    resolve(true);
+                });
                 
-                if (this.onConnectCallback) {
-                    this.onConnectCallback();
-                }
-            });
-            
-            this.ws.on('message', (data) => {
-                this.handleMessage(data);
-            });
-            
-            this.ws.on('close', (code, reason) => {
-                console.log(`🔌 WebSocket disconnected: ${code} - ${reason?.toString() || 'Unknown reason'}`);
-                this.isConnected = false;
-                this.disconnectionTime = new Date(); // Track disconnection time for gap detection
-                this.stopPingPongHandling();
-                this.stopConnectionHealthMonitoring();
+                this.ws.on('message', (data) => {
+                    this.handleMessage(data);
+                });
                 
-                if (this.onDisconnectCallback) {
-                    this.onDisconnectCallback(code, reason);
-                }
+                this.ws.on('close', (code, reason) => {
+                    clearTimeout(connectionTimeout);
+                    console.log(`🔌 WebSocket disconnected: ${code} - ${reason?.toString() || 'Unknown reason'}`);
+                    this.isConnected = false;
+                    this.disconnectionTime = new Date(); // Track disconnection time for gap detection
+                    this.stopPingPongHandling();
+                    this.stopConnectionHealthMonitoring();
+                    
+                    if (this.onDisconnectCallback) {
+                        this.onDisconnectCallback(code, reason);
+                    }
+                    
+                    // Attempt reconnection if not intentional disconnect and reconnection is enabled
+                    if (code !== 1000 && this.shouldReconnect) {
+                        console.log(`🔄 Connection closed with code ${code}, will attempt reconnection...`);
+                        this.handleReconnection();
+                    } else if (code === 1000) {
+                        console.log('✅ Normal WebSocket closure, no reconnection needed');
+                    } else {
+                        console.log('🛑 Reconnection disabled, not attempting to reconnect');
+                    }
+                });
                 
-                // Attempt reconnection if not intentional disconnect and reconnection is enabled
-                if (code !== 1000 && this.shouldReconnect) {
-                    console.log(`🔄 Connection closed with code ${code}, will attempt reconnection...`);
-                    this.handleReconnection();
-                } else if (code === 1000) {
-                    console.log('✅ Normal WebSocket closure, no reconnection needed');
-                } else {
-                    console.log('🛑 Reconnection disabled, not attempting to reconnect');
-                }
-            });
-            
-            this.ws.on('error', (error) => {
-                console.error('❌ WebSocket error:', error);
-                this.stats.errors++;
+                this.ws.on('error', (error) => {
+                    clearTimeout(connectionTimeout);
+                    console.error('❌ WebSocket error:', error);
+                    this.stats.errors++;
+                    
+                    if (this.onErrorCallback) {
+                        this.onErrorCallback(error);
+                    }
+                    
+                    // Reject the promise on error
+                    reject(error);
+                });
                 
-                if (this.onErrorCallback) {
-                    this.onErrorCallback(error);
-                }
-            });
-            
-        } catch (error) {
-            console.error('❌ Failed to connect WebSocket:', error);
-            throw error;
-        }
+            } catch (error) {
+                console.error('❌ Failed to connect WebSocket:', error);
+                reject(error);
+            }
+        });
     }
 
     /**
