@@ -102,15 +102,14 @@ class WebSocketCandleCollector {
                         this.persistedSymbols = [...initialSymbols];
                         console.log(`📊 Subscribing to ${initialSymbols.length} streams after connection...`);
                         
-                        // Subscribe to all symbols immediately since connection is ready
-                        const subscribeResults = this.subscribeToSymbols(initialSymbols);
-                        const successCount = subscribeResults.filter(r => r.success).length;
+                        // Subscribe to all symbols with batching (async)
+                        this.subscribeToSymbols(initialSymbols);
                         
-                        if (successCount > 0) {
-                            console.log(`✅ Successfully subscribed to ${successCount} streams`);
-                            // Start health monitoring after successful subscriptions
+                        // Start health monitoring after connection is established
+                        // Batched subscriptions will complete asynchronously
+                        setTimeout(() => {
                             this.startConnectionHealthMonitoring();
-                        }
+                        }, 2000); // Allow time for batched subscriptions to complete
                     }
                     
                     if (this.onConnectCallback) {
@@ -308,20 +307,73 @@ class WebSocketCandleCollector {
     }
 
     /**
-     * Subscribe to multiple symbols at once
+     * Subscribe to multiple symbols with batching and rate limiting
      */
     subscribeToSymbols(symbols) {
         const results = [];
+        const BATCH_SIZE = 10; // Binance allows ~10 subscriptions per message
+        const BATCH_DELAY = 1000; // 1 second delay between batches
         
-        for (const symbol of symbols) {
-            const success = this.subscribeToSymbol(symbol);
-            results.push({ symbol, success });
+        console.log(`📊 Subscribing to ${symbols.length} streams in batches of ${BATCH_SIZE}...`);
+        
+        // Process symbols in batches
+        for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+            const batch = symbols.slice(i, i + BATCH_SIZE);
+            
+            setTimeout(() => {
+                console.log(`📊 Processing batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(symbols.length/BATCH_SIZE)}: ${batch.length} symbols`);
+                
+                const batchResults = this.subscribeToBatch(batch);
+                results.push(...batchResults);
+                
+                const completedCount = results.length;
+                const successCount = results.filter(r => r.success).length;
+                
+                if (completedCount === symbols.length) {
+                    console.log(`✅ Completed all subscriptions: ${successCount}/${symbols.length} successful`);
+                }
+            }, (i / BATCH_SIZE) * BATCH_DELAY);
         }
         
-        const successCount = results.filter(r => r.success).length;
-        console.log(`📊 Subscribed to ${successCount}/${symbols.length} candlestick streams`);
-        
+        // Return immediate results for synchronous calls (will be empty initially)
+        // The actual subscription happens asynchronously
         return results;
+    }
+
+    /**
+     * Subscribe to a batch of symbols in a single message
+     */
+    subscribeToBatch(symbols) {
+        if (!this.isConnected) {
+            console.warn(`⚠️ Cannot subscribe to batch - WebSocket not connected`);
+            return symbols.map(symbol => ({ symbol, success: false }));
+        }
+
+        try {
+            // Create streams for all symbols in the batch
+            const streams = symbols.map(symbol => `${symbol.toLowerCase()}@kline_1m`);
+            
+            const subscribeMessage = {
+                method: "SUBSCRIBE",
+                params: streams,
+                id: Date.now()
+            };
+            
+            this.ws.send(JSON.stringify(subscribeMessage));
+            
+            // Add all symbols to subscribed set
+            symbols.forEach(symbol => {
+                this.subscribedSymbols.add(symbol);
+            });
+            
+            console.log(`📊 Batch subscribed to ${symbols.length} streams: ${symbols.slice(0, 3).join(', ')}${symbols.length > 3 ? '...' : ''}`);
+            
+            return symbols.map(symbol => ({ symbol, success: true }));
+            
+        } catch (error) {
+            console.error(`❌ Failed to subscribe to batch:`, error);
+            return symbols.map(symbol => ({ symbol, success: false }));
+        }
     }
 
     /**
