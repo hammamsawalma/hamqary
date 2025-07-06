@@ -35,6 +35,34 @@ async function saveSelectedSymbols(client, dbName, selectedSymbols) {
 }
 
 /**
+ * Get the currently selected symbols from the database
+ * @param {Object} client - MongoDB client
+ * @param {string} dbName - Database name
+ * @returns {Promise<Array>} Array of currently selected symbols
+ */
+async function getSelectedSymbols(client, dbName) {
+    if (!client) {
+        throw new Error('Database connection not available');
+    }
+    
+    const db = client.db(dbName);
+    const collection = db.collection('selectedSymbols');
+    
+    // Get the most recent symbol selection
+    const latestSelection = await collection.findOne(
+        {},
+        { sort: { timestamp: -1 } }
+    );
+    
+    if (!latestSelection) {
+        // No symbols selected yet, return empty array
+        return [];
+    }
+    
+    return latestSelection.symbols || [];
+}
+
+/**
  * Get candle data for a specific symbol and interval
  * @param {Object} client - MongoDB client
  * @param {string} dbName - Database name
@@ -506,6 +534,7 @@ async function ensureReversalCandleIndexes(client, dbName) {
 
 module.exports = {
     saveSelectedSymbols,
+    getSelectedSymbols,
     getCandleData,
     getCandleCount,
     getLastUpdateTime,

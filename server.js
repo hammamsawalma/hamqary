@@ -5,7 +5,9 @@ const {
     setupArtificialCandleDataCronJobs,
     runInitialCandleDataFetch,
     runInitialArtificialCandleDataGeneration,
+    runInitialTopMoversSelection,
     setupMonitoringCronJob,
+    setupTopMoversCronJob,
     setupDataCleanupCronJob
 } = require('./config/cron');
 const routes = require('./routes');
@@ -41,6 +43,9 @@ async function startServer() {
             // Set up monitoring cron job
             setupMonitoringCronJob();
             
+            // Set up top movers automatic selection cron job
+            setupTopMoversCronJob(client, dbName);
+            
             // Set up data cleanup cron job
             setupDataCleanupCronJob(client, dbName);
             
@@ -49,6 +54,9 @@ async function startServer() {
             
             // Run initial artificial candle data generation
             await runInitialArtificialCandleDataGeneration(client, dbName);
+            
+            // Run initial top movers selection
+            await runInitialTopMoversSelection(client, dbName);
             
             console.log('✅ All cron jobs have been successfully configured');
         }

@@ -754,6 +754,129 @@ function generateSignalsDashboard(viewData) {
                     transform: scale(0.95);
                 }
                 
+                /* Notification System */
+                .notification-btn {
+                    background: linear-gradient(135deg, #3498db, #2980b9);
+                    color: white;
+                    border: none;
+                    padding: 8px 12px;
+                    border-radius: 50%;
+                    font-size: 1.2em;
+                    cursor: pointer;
+                    transition: all 0.3s ease;
+                    position: relative;
+                }
+                .notification-btn:hover {
+                    background: linear-gradient(135deg, #2980b9, #1f3a93);
+                    transform: scale(1.1);
+                }
+                .notification-btn.active {
+                    background: linear-gradient(135deg, #e74c3c, #c0392b);
+                }
+                
+                .notification-panel {
+                    margin-top: 20px;
+                    background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+                    border-radius: 15px;
+                    padding: 20px;
+                    border-left: 4px solid #3498db;
+                    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+                }
+                .notification-panel h4 {
+                    color: #2c3e50;
+                    margin-bottom: 15px;
+                    font-size: 1.2em;
+                }
+                .notification-controls {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                    gap: 15px;
+                }
+                .control-row {
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                    padding: 10px;
+                    background: rgba(255, 255, 255, 0.8);
+                    border-radius: 8px;
+                }
+                
+                /* Toggle Switch */
+                .switch {
+                    position: relative;
+                    display: inline-block;
+                    width: 50px;
+                    height: 24px;
+                }
+                .switch input {
+                    opacity: 0;
+                    width: 0;
+                    height: 0;
+                }
+                .slider {
+                    position: absolute;
+                    cursor: pointer;
+                    top: 0;
+                    left: 0;
+                    right: 0;
+                    bottom: 0;
+                    background-color: #ccc;
+                    transition: 0.4s;
+                    border-radius: 24px;
+                }
+                .slider:before {
+                    position: absolute;
+                    content: "";
+                    height: 18px;
+                    width: 18px;
+                    left: 3px;
+                    bottom: 3px;
+                    background-color: white;
+                    transition: 0.4s;
+                    border-radius: 50%;
+                }
+                input:checked + .slider {
+                    background-color: #3498db;
+                }
+                input:checked + .slider:before {
+                    transform: translateX(26px);
+                }
+                
+                /* New Signal Indicators */
+                .signal-card.new-signal {
+                    animation: pulse 2s infinite;
+                    border-left: 4px solid #e74c3c !important;
+                }
+                .signal-card.new-signal::before {
+                    content: 'NEW';
+                    position: absolute;
+                    top: 10px;
+                    right: 10px;
+                    background: #e74c3c;
+                    color: white;
+                    padding: 4px 8px;
+                    border-radius: 12px;
+                    font-size: 0.7em;
+                    font-weight: 600;
+                    z-index: 10;
+                }
+                
+                @keyframes pulse {
+                    0% { box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1); }
+                    50% { box-shadow: 0 8px 32px rgba(231, 76, 60, 0.3); }
+                    100% { box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1); }
+                }
+                
+                #newSignalsCount {
+                    animation: bounce 1s infinite;
+                }
+                
+                @keyframes bounce {
+                    0%, 20%, 50%, 80%, 100% { transform: translateY(0); }
+                    40% { transform: translateY(-10px); }
+                    60% { transform: translateY(-5px); }
+                }
+                
                 /* Responsive */
                 @media (max-width: 768px) {
                     .container { padding: 15px; }
@@ -770,11 +893,62 @@ function generateSignalsDashboard(viewData) {
                 <div class="header">
                     <h1>
                         🚀 Trading Signals Dashboard
-                        <span style="font-size: 0.3em; margin-left: auto;">
+                        <span style="font-size: 0.3em; margin-left: auto; display: flex; align-items: center; gap: 15px;">
+                            <span id="newSignalsCount" style="color: #e74c3c; font-weight: 600; display: none; cursor: pointer;" onclick="scrollToFirstNewSignal()">
+                                🔥 0 NEW SIGNALS
+                            </span>
+                            <button id="notificationToggle" class="notification-btn" title="Notification Settings">
+                                🔔
+                            </button>
                             <span id="lastUpdate" style="color: #7f8c8d;">Loading...</span>
                         </span>
                     </h1>
                     <p>Real-time volume profile trading signals with advanced scoring</p>
+                    
+                    <!-- Notification Settings Panel -->
+                    <div id="notificationPanel" class="notification-panel" style="display: none;">
+                        <h4>🔔 Notification Settings</h4>
+                        <div class="notification-controls">
+                            <div class="control-row">
+                                <label class="switch">
+                                    <input type="checkbox" id="enableNotifications" checked>
+                                    <span class="slider"></span>
+                                </label>
+                                <span>Browser Notifications</span>
+                            </div>
+                            <div class="control-row">
+                                <label class="switch">
+                                    <input type="checkbox" id="enableSounds" checked>
+                                    <span class="slider"></span>
+                                </label>
+                                <span>Sound Alerts</span>
+                            </div>
+                            <div class="control-row">
+                                <label for="notificationSound">Alert Sound:</label>
+                                <select id="notificationSound">
+                                    <option value="ding">🔔 Ding</option>
+                                    <option value="chime">🎵 Chime</option>
+                                    <option value="alert">⚠️ Alert</option>
+                                    <option value="success">✅ Success</option>
+                                </select>
+                            </div>
+                            <div class="control-row">
+                                <label for="volumeSlider">Volume:</label>
+                                <input type="range" id="volumeSlider" min="0" max="100" value="70">
+                                <span id="volumeValue">70%</span>
+                            </div>
+                            <div class="control-row">
+                                <label class="switch">
+                                    <input type="checkbox" id="onlyHighScore">
+                                    <span class="slider"></span>
+                                </label>
+                                <span>Only High Score (8+) Signals</span>
+                            </div>
+                            <div class="control-row">
+                                <button id="testNotification" class="btn btn-primary">🔊 Test Notification</button>
+                            </div>
+                        </div>
+                    </div>
                     
                     ${!viewData.hasSymbols ? `
                         <div style="background: linear-gradient(135deg, #fff3cd, #ffeaa7); padding: 20px; border-radius: 10px; border-left: 4px solid #f39c12;">
@@ -1213,11 +1387,428 @@ function generateSignalsDashboard(viewData) {
                 // Make deleteSignal function available globally
                 window.deleteSignal = deleteSignal;
                 
+                // ===========================================
+                // NOTIFICATION SYSTEM - ENHANCED WITH DEBUGGING
+                // ===========================================
+                
+                console.log('🔔 Initializing notification system...');
+                
+                // Notification system variables
+                let lastSeenSignals = JSON.parse(localStorage.getItem('lastSeenSignals') || '[]');
+                let notificationSettings = JSON.parse(localStorage.getItem('notificationSettings') || JSON.stringify({
+                    enableNotifications: true,
+                    enableSounds: true,
+                    notificationSound: 'ding',
+                    volume: 70,
+                    onlyHighScore: false
+                }));
+                let audioContext = null;
+                let audioContextInitialized = false;
+                let lastNotificationTime = 0;
+                const NOTIFICATION_COOLDOWN = 5000; // 5 seconds between notifications
+                
+                console.log('🔔 Loaded settings:', notificationSettings);
+                console.log('🔔 Last seen signals:', lastSeenSignals.length);
+                
+                // Initialize notification system
+                function initializeNotificationSystem() {
+                    // Load settings from localStorage
+                    loadNotificationSettings();
+                    
+                    // Set up event listeners
+                    setupNotificationEventListeners();
+                    
+                    // Request browser notification permission
+                    requestNotificationPermission();
+                    
+                    // Initialize audio context
+                    initializeAudioContext();
+                    
+                    // Store current signals as seen
+                    storeCurrentSignalsAsSeen();
+                }
+                
+                // Load notification settings from localStorage
+                function loadNotificationSettings() {
+                    document.getElementById('enableNotifications').checked = notificationSettings.enableNotifications;
+                    document.getElementById('enableSounds').checked = notificationSettings.enableSounds;
+                    document.getElementById('notificationSound').value = notificationSettings.notificationSound;
+                    document.getElementById('volumeSlider').value = notificationSettings.volume;
+                    document.getElementById('volumeValue').textContent = notificationSettings.volume + '%';
+                    document.getElementById('onlyHighScore').checked = notificationSettings.onlyHighScore;
+                }
+                
+                // Save notification settings to localStorage
+                function saveNotificationSettings() {
+                    notificationSettings = {
+                        enableNotifications: document.getElementById('enableNotifications').checked,
+                        enableSounds: document.getElementById('enableSounds').checked,
+                        notificationSound: document.getElementById('notificationSound').value,
+                        volume: parseInt(document.getElementById('volumeSlider').value),
+                        onlyHighScore: document.getElementById('onlyHighScore').checked
+                    };
+                    localStorage.setItem('notificationSettings', JSON.stringify(notificationSettings));
+                }
+                
+                // Set up notification event listeners
+                function setupNotificationEventListeners() {
+                    // Notification panel toggle
+                    document.getElementById('notificationToggle').addEventListener('click', function() {
+                        const panel = document.getElementById('notificationPanel');
+                        const button = document.getElementById('notificationToggle');
+                        
+                        if (panel.style.display === 'none') {
+                            panel.style.display = 'block';
+                            button.classList.add('active');
+                        } else {
+                            panel.style.display = 'none';
+                            button.classList.remove('active');
+                        }
+                    });
+                    
+                    // Settings change listeners
+                    ['enableNotifications', 'enableSounds', 'onlyHighScore'].forEach(id => {
+                        document.getElementById(id).addEventListener('change', saveNotificationSettings);
+                    });
+                    
+                    document.getElementById('notificationSound').addEventListener('change', saveNotificationSettings);
+                    
+                    // Volume slider
+                    document.getElementById('volumeSlider').addEventListener('input', function() {
+                        const volume = this.value;
+                        document.getElementById('volumeValue').textContent = volume + '%';
+                        saveNotificationSettings();
+                    });
+                    
+                    // Test notification button
+                    document.getElementById('testNotification').addEventListener('click', function() {
+                        const testSignal = {
+                            symbol: 'BTCUSDT',
+                            tradeSignal: { signalType: 'buy', score: 8.5 },
+                            interval: '5m',
+                            volumeFootprint: { totalVolume: 1234567 }
+                        };
+                        showNotificationForSignal(testSignal, true);
+                    });
+                }
+                
+                // Request browser notification permission
+                function requestNotificationPermission() {
+                    if ('Notification' in window && Notification.permission === 'default') {
+                        Notification.requestPermission().then(permission => {
+                            if (permission === 'granted') {
+                                console.log('🔔 Notification permission granted');
+                            } else {
+                                console.log('🔕 Notification permission denied');
+                            }
+                        });
+                    }
+                }
+                
+                // Initialize audio context for sound alerts - WITH DEBUGGING
+                function initializeAudioContext() {
+                    console.log('🔊 Initializing audio context...');
+                    try {
+                        // Don't create audio context immediately - wait for user interaction
+                        console.log('🔊 Audio context will be initialized on first user interaction');
+                    } catch (error) {
+                        console.error('🔊 Audio context initialization failed:', error);
+                    }
+                }
+                
+                // Create audio context on user interaction (fixes autoplay policy)
+                function ensureAudioContext() {
+                    if (!audioContext && !audioContextInitialized) {
+                        try {
+                            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                            audioContextInitialized = true;
+                            console.log('🔊 Audio context created successfully');
+                            
+                            // Resume context if suspended
+                            if (audioContext.state === 'suspended') {
+                                audioContext.resume().then(() => {
+                                    console.log('🔊 Audio context resumed');
+                                }).catch(error => {
+                                    console.error('🔊 Failed to resume audio context:', error);
+                                });
+                            }
+                        } catch (error) {
+                            console.error('🔊 Failed to create audio context:', error);
+                            audioContext = null;
+                        }
+                    }
+                    return audioContext;
+                }
+                
+                // Generate notification sound - WITH ENHANCED ERROR HANDLING
+                function playNotificationSound(soundType = 'ding') {
+                    console.log('🔊 Attempting to play notification sound:', soundType);
+                    
+                    if (!notificationSettings.enableSounds) {
+                        console.log('🔊 Sound alerts disabled in settings');
+                        return;
+                    }
+                    
+                    // Ensure audio context is created
+                    const ctx = ensureAudioContext();
+                    if (!ctx) {
+                        console.error('🔊 No audio context available');
+                        return;
+                    }
+                    
+                    const volume = notificationSettings.volume / 100;
+                    console.log('🔊 Playing sound with volume:', volume);
+                    
+                    try {
+                        // Different sound patterns
+                        const sounds = {
+                            ding: [800, 0.1, 600, 0.1],
+                            chime: [523, 0.15, 659, 0.15, 784, 0.2],
+                            alert: [1000, 0.1, 800, 0.1, 1200, 0.15],
+                            success: [523, 0.1, 659, 0.1, 784, 0.1, 1047, 0.2]
+                        };
+                        
+                        const pattern = sounds[soundType] || sounds.ding;
+                        let time = ctx.currentTime;
+                        
+                        for (let i = 0; i < pattern.length; i += 2) {
+                            const freq = pattern[i];
+                            const duration = pattern[i + 1];
+                            
+                            const osc = ctx.createOscillator();
+                            const gain = ctx.createGain();
+                            
+                            osc.connect(gain);
+                            gain.connect(ctx.destination);
+                            
+                            osc.frequency.value = freq;
+                            osc.type = 'sine';
+                            
+                            gain.gain.setValueAtTime(0, time);
+                            gain.gain.linearRampToValueAtTime(volume * 0.3, time + 0.01);
+                            gain.gain.exponentialRampToValueAtTime(0.001, time + duration);
+                            
+                            osc.start(time);
+                            osc.stop(time + duration);
+                            
+                            time += duration + 0.05;
+                        }
+                        console.log('🔊 Sound played successfully');
+                    } catch (error) {
+                        console.error('🔊 Error playing sound:', error);
+                    }
+                }
+                
+                // Show browser notification for new signal
+                function showBrowserNotification(signal, isTest = false) {
+                    if (!notificationSettings.enableNotifications && !isTest) return;
+                    if (Notification.permission !== 'granted') return;
+                    
+                    const title = isTest ? '🔊 Test Notification' : '🚀 New Trading Signal!';
+                    const stopLoss = calculateStopLoss(signal);
+                    
+                    const body = isTest ? 
+                        'This is a test notification. Your alerts are working!' :
+                        \`\${signal.symbol} - \${signal.tradeSignal.signalType.toUpperCase()} Signal
+Score: \${signal.tradeSignal.score} | Risk: \${stopLoss.formattedRiskPercentage}
+\${signal.interval} timeframe\`;
+                    
+                    const notification = new Notification(title, {
+                        body: body,
+                        icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">🚀</text></svg>',
+                        tag: isTest ? 'test' : \`signal-\${signal._id}\`,
+                        requireInteraction: false
+                    });
+                    
+                    // Auto-close after 10 seconds
+                    setTimeout(() => notification.close(), 10000);
+                    
+                    // Click handler to focus window and scroll to signal
+                    notification.onclick = function() {
+                        window.focus();
+                        if (!isTest) {
+                            const signalCard = document.querySelector(\`[data-signal-id="\${signal._id}"]\`);
+                            if (signalCard) {
+                                signalCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }
+                        }
+                        notification.close();
+                    };
+                }
+                
+                // Show notification for signal (combines browser + sound)
+                function showNotificationForSignal(signal, isTest = false) {
+                    const now = Date.now();
+                    
+                    // Rate limiting (except for tests)
+                    if (!isTest && now - lastNotificationTime < NOTIFICATION_COOLDOWN) {
+                        return;
+                    }
+                    
+                    // Check high score filter
+                    if (!isTest && notificationSettings.onlyHighScore && signal.tradeSignal.score < 8) {
+                        return;
+                    }
+                    
+                    // Show browser notification
+                    showBrowserNotification(signal, isTest);
+                    
+                    // Play sound
+                    playNotificationSound(notificationSettings.notificationSound);
+                    
+                    lastNotificationTime = now;
+                }
+                
+                // Store current signals as seen
+                function storeCurrentSignalsAsSeen() {
+                    const currentSignals = Array.from(document.querySelectorAll('.signal-card')).map(card => {
+                        return card.getAttribute('data-signal-id');
+                    }).filter(id => id);
+                    
+                    lastSeenSignals = currentSignals;
+                    localStorage.setItem('lastSeenSignals', JSON.stringify(lastSeenSignals));
+                }
+                
+                // Check for new signals and show notifications
+                function checkForNewSignals() {
+                    const currentSignals = Array.from(document.querySelectorAll('.signal-card'));
+                    const currentSignalIds = currentSignals.map(card => card.getAttribute('data-signal-id')).filter(id => id);
+                    
+                    // Find new signals
+                    const newSignalIds = currentSignalIds.filter(id => !lastSeenSignals.includes(id));
+                    
+                    if (newSignalIds.length > 0) {
+                        console.log(\`🔥 Found \${newSignalIds.length} new signals:\`, newSignalIds);
+                        
+                        // Add visual indicators and show notifications
+                        newSignalIds.forEach(signalId => {
+                            const signalCard = document.querySelector(\`[data-signal-id="\${signalId}"]\`);
+                            if (signalCard) {
+                                // Add new signal class for animation
+                                signalCard.classList.add('new-signal');
+                                
+                                // Extract signal data for notification
+                                try {
+                                    const symbolElement = signalCard.querySelector('.signal-symbol');
+                                    const typeElement = signalCard.querySelector('.signal-type');
+                                    const scoreElement = signalCard.querySelector('.score-value');
+                                    const intervalElement = signalCard.querySelector('.detail-value');
+                                    
+                                    if (symbolElement && typeElement && scoreElement) {
+                                        const signal = {
+                                            _id: signalId,
+                                            symbol: symbolElement.textContent,
+                                            tradeSignal: {
+                                                signalType: typeElement.textContent.includes('BUY') ? 'buy' : 'sell',
+                                                score: parseFloat(scoreElement.textContent)
+                                            },
+                                            interval: intervalElement ? intervalElement.textContent : '5m',
+                                            volumeFootprint: { totalVolume: 1000000 }
+                                        };
+                                        
+                                        // Show notification
+                                        showNotificationForSignal(signal);
+                                    }
+                                } catch (error) {
+                                    console.log('Error extracting signal data:', error);
+                                }
+                            }
+                        });
+                        
+                        // Update new signals counter
+                        updateNewSignalsCounter(newSignalIds.length);
+                        
+                        // Auto-scroll to first new signal
+                        setTimeout(() => {
+                            const firstNewSignal = document.querySelector('.signal-card.new-signal');
+                            if (firstNewSignal) {
+                                firstNewSignal.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }
+                        }, 1000);
+                    }
+                    
+                    // Update seen signals
+                    lastSeenSignals = currentSignalIds;
+                    localStorage.setItem('lastSeenSignals', JSON.stringify(lastSeenSignals));
+                }
+                
+                // Update new signals counter
+                function updateNewSignalsCounter(count) {
+                    const counter = document.getElementById('newSignalsCount');
+                    if (count > 0) {
+                        counter.textContent = \`🔥 \${count} NEW SIGNAL\${count > 1 ? 'S' : ''}\`;
+                        counter.style.display = 'inline';
+                    } else {
+                        counter.style.display = 'none';
+                    }
+                }
+                
+                // Scroll to first new signal
+                function scrollToFirstNewSignal() {
+                    const firstNewSignal = document.querySelector('.signal-card.new-signal');
+                    if (firstNewSignal) {
+                        firstNewSignal.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        
+                        // Remove new signal indicators after viewing
+                        setTimeout(() => {
+                            document.querySelectorAll('.signal-card.new-signal').forEach(card => {
+                                card.classList.remove('new-signal');
+                            });
+                            updateNewSignalsCounter(0);
+                        }, 2000);
+                    }
+                }
+                
+                // Make functions available globally
+                window.scrollToFirstNewSignal = scrollToFirstNewSignal;
+                window.calculateStopLoss = function(signal) {
+                    // Simple mock calculation for notifications
+                    return {
+                        formattedRiskPercentage: '2.5%'
+                    };
+                };
+                
+                // Enhanced refresh function to check for new signals
+                const originalRefreshData = refreshData;
+                refreshData = function() {
+                    // Store current signals before refresh
+                    storeCurrentSignalsAsSeen();
+                    originalRefreshData();
+                };
+                
+                // Override auto-refresh to include notification check
+                function startAutoRefreshWithNotifications() {
+                    updateLastUpdateTime();
+                    
+                    // Check for new signals on initial load
+                    setTimeout(checkForNewSignals, 1000);
+                    
+                    autoRefreshInterval = setInterval(() => {
+                        // Store current signals before refresh
+                        storeCurrentSignalsAsSeen();
+                        
+                        // Add a flag to indicate this is an auto-refresh
+                        sessionStorage.setItem('autoRefresh', 'true');
+                        
+                        refreshData();
+                    }, 60000); // 1 minute
+                }
+                
+                // Check if this page load was from auto-refresh
+                if (sessionStorage.getItem('autoRefresh') === 'true') {
+                    sessionStorage.removeItem('autoRefresh');
+                    // Check for new signals after page loads
+                    setTimeout(checkForNewSignals, 500);
+                }
+                
+                // Initialize notification system
+                initializeNotificationSystem();
+                
                 // Initialize
                 updateSelectedCount();
                 
-                // Start auto-refresh
-                startAutoRefresh();
+                // Start auto-refresh with notifications
+                startAutoRefreshWithNotifications();
             </script>
         </body>
         </html>

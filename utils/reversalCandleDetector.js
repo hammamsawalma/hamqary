@@ -58,6 +58,16 @@ function detectReversalCandle(candle) {
         // For a buy reversal, we want the body to be positioned higher
         // and the lower tail to be significantly longer
         if (bodyPosition >= 50 && lowerTailPercentage >= 30) {
+            // Calculate stoploss risk percentage for buy signal
+            // Buy stoploss = low, so risk = ((close - low) / close) * 100
+            const stopLossRisk = ((close - low) / close) * 100;
+            
+            // Apply 0.4% minimum threshold - skip if risk is too low
+            if (stopLossRisk < 0.4) {
+                console.log(`🚫 Buy reversal skipped for ${close}: Risk ${stopLossRisk.toFixed(3)}% < 0.4% threshold`);
+                return null;
+            }
+            
             return {
                 type: 'buy_reversal',
                 bodyPercentage: Math.round(bodyPercentage * 100) / 100,
@@ -69,7 +79,9 @@ function detectReversalCandle(candle) {
                 lowerTail: lowerTailCorrected,
                 candleColor: isBullish ? 'green' : isBearish ? 'red' : 'doji',
                 bodyPosition: Math.round(bodyPosition * 100) / 100,
-                confidence: calculateConfidence('buy', bodyPercentage, upperTailPercentage, lowerTailPercentage, bodyPosition)
+                confidence: calculateConfidence('buy', bodyPercentage, upperTailPercentage, lowerTailPercentage, bodyPosition),
+                stopLossPrice: low,
+                stopLossRisk: Math.round(stopLossRisk * 100) / 100
             };
         }
     }
@@ -83,6 +95,16 @@ function detectReversalCandle(candle) {
         // For a sell reversal, we want the body to be positioned lower
         // and the upper tail to be significantly longer
         if (bodyPosition <= 50 && upperTailPercentage >= 30) {
+            // Calculate stoploss risk percentage for sell signal
+            // Sell stoploss = high, so risk = ((high - close) / close) * 100
+            const stopLossRisk = ((high - close) / close) * 100;
+            
+            // Apply 0.4% minimum threshold - skip if risk is too low
+            if (stopLossRisk < 0.4) {
+                console.log(`🚫 Sell reversal skipped for ${close}: Risk ${stopLossRisk.toFixed(3)}% < 0.4% threshold`);
+                return null;
+            }
+            
             return {
                 type: 'sell_reversal',
                 bodyPercentage: Math.round(bodyPercentage * 100) / 100,
@@ -94,7 +116,9 @@ function detectReversalCandle(candle) {
                 lowerTail: lowerTailCorrected,
                 candleColor: isBullish ? 'green' : isBearish ? 'red' : 'doji',
                 bodyPosition: Math.round(bodyPosition * 100) / 100,
-                confidence: calculateConfidence('sell', bodyPercentage, upperTailPercentage, lowerTailPercentage, bodyPosition)
+                confidence: calculateConfidence('sell', bodyPercentage, upperTailPercentage, lowerTailPercentage, bodyPosition),
+                stopLossPrice: high,
+                stopLossRisk: Math.round(stopLossRisk * 100) / 100
             };
         }
     }
