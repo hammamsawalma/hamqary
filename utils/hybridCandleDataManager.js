@@ -7,7 +7,7 @@
 const { getGlobalCandleCollector, initializeGlobalCandleCollector } = require('./websocketCandleCollector');
 const { detectReversalCandle } = require('./reversalCandleDetector');
 const { saveReversalCandle } = require('../models/database');
-const { fetchReversalCandleTickData } = require('./fetchHistoricalTickData');
+const { fetchReversalCandleTickData, isCurrentlyBanned } = require('./fetchHistoricalTickData');
 const { calculateReversalVolumeFootprint } = require('./volumeFootprintCalculator');
 const { validateTradeSignal } = require('./tradeSignalValidator');
 const { getGlobalGapRecoverySystem } = require('./gapRecoverySystem');
@@ -45,17 +45,23 @@ class HybridCandleDataManager {
                                    21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
                                    41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60];
         
+        // Generation tracking to prevent duplicates
+        this.generatedCandles = new Map(); // Format: "symbol-interval-timestamp" -> true
+        this.generationLocks = new Map(); // Format: "symbol-interval-timestamp" -> Promise
+        
         // Statistics
         this.stats = {
             historicalCandlesLoaded: 0,
             realtimeCandlesProcessed: 0,
             artificialCandlesGenerated: 0,
             reversalPatternsDetected: 0,
+            duplicatesPrevented: 0,
+            volumeFootprintSkipped: 0,
             lastProcessedCandle: null,
             startTime: new Date()
         };
         
-        console.log('🔄 Hybrid Candle Data Manager initialized');
+        console.log('🔄 Hybrid Candle Data Manager initialized with duplicate prevention and IP ban protection');
     }
     
     /**
@@ -208,20 +214,29 @@ class HybridCandleDataManager {
     }
     
     /**
-     * Handle real-time candle data from WebSocket
+     * Handle real-time candle data from WebSocket with proper timing synchronization
      */
     async handleRealtimeCandle(candleData) {
         console.log(`⚡ Real-time 1-minute candle: ${candleData.symbol} at ${candleData.closeTime.toISOString()}`);
         
         try {
-            // Process the 1-minute candle
+            // Process the 1-minute candle first
             await this.processOneMinuteCandle(candleData);
             
             this.stats.realtimeCandlesProcessed++;
             this.stats.lastProcessedCandle = new Date();
             
-            // Check if we need to generate artificial candles
-            await this.checkAndGenerateArtificialCandles(candleData.closeTime);
+            // 🕐 TIMING FIX: Add delay to ensure database storage is complete
+            // This prevents the race condition where artificial generation happens
+            // before the 1-minute candle is fully stored in database
+            console.log(`⏳ Waiting 3 seconds for storage completion before checking artificial generation...`);
+            setTimeout(async () => {
+                try {
+                    await this.checkAndGenerateArtificialCandlesWithVerification(candleData);
+                } catch (delayedError) {
+                    console.error(`❌ Error in delayed artificial candle generation:`, delayedError);
+                }
+            }, 3000); // 3 second delay
             
         } catch (error) {
             console.error(`❌ Error handling real-time candle for ${candleData.symbol}:`, error);
@@ -272,7 +287,7 @@ class HybridCandleDataManager {
     }
     
     /**
-     * Process reversal candle with volume footprint and trade signal validation
+     * Process reversal candle with IP ban protection and smart volume footprint calculation
      */
     async processReversalCandle(candleData, reversalPattern) {
         try {
@@ -292,56 +307,105 @@ class HybridCandleDataManager {
                 reversalPattern: reversalPattern
             };
             
-            // Calculate volume footprint
-            const openTime = candleData.openTime instanceof Date ? candleData.openTime.getTime() : candleData.openTime;
-            const closeTime = candleData.closeTime instanceof Date ? candleData.closeTime.getTime() : candleData.closeTime;
+            // 🚫 IP BAN PROTECTION - Check if API is banned before attempting tick data fetch
+            const isBanned = isCurrentlyBanned();
             
-            const tickDataResult = await fetchReversalCandleTickData(
-                candleData.symbol,
-                openTime,
-                closeTime,
-                candleData.interval
-            );
-            
-            if (tickDataResult.success && tickDataResult.trades.length > 0) {
-                const volumeFootprint = calculateReversalVolumeFootprint(
-                    tickDataResult.trades,
-                    candleData.symbol,
-                    openTime,
-                    closeTime
-                );
+            if (isBanned) {
+                console.log(`🚫 Skipping volume footprint for ${candleData.symbol} ${candleData.interval} - IP banned`);
+                this.stats.volumeFootprintSkipped++;
                 
-                if (!volumeFootprint.error) {
-                    reversalData.volumeFootprint = {
-                        poc: volumeFootprint.poc,
-                        vah: volumeFootprint.vah,
-                        val: volumeFootprint.val,
-                        totalVolume: volumeFootprint.totalVolume,
-                        valueAreaVolume: volumeFootprint.valueAreaVolume,
-                        valueAreaPercentage: volumeFootprint.valueAreaPercentage,
-                        tickDataSource: candleData.dataSource === 'websocket_realtime' ? 'realtime' : 'historical',
-                        calculatedAt: new Date(),
-                        tradesProcessed: volumeFootprint.tradesProcessed,
-                        executionTime: tickDataResult.executionTime
-                    };
+                // Create a basic trade signal validation without volume footprint
+                const basicTradeSignalValidation = this.createBasicTradeSignal(reversalData.candleData, reversalPattern.type);
+                
+                reversalData.tradeSignal = {
+                    isValidSignal: basicTradeSignalValidation.isValidSignal,
+                    signalType: basicTradeSignalValidation.signalType,
+                    reason: `${basicTradeSignalValidation.reason} (Volume footprint skipped - IP banned)`,
+                    score: basicTradeSignalValidation.score || 0,
+                    criteria: basicTradeSignalValidation.criteria,
+                    validatedAt: new Date(),
+                    fallbackMode: true
+                };
+                
+                console.log(`🚦 Basic trade signal: ${basicTradeSignalValidation.isValidSignal ? '✅ VALID' : '❌ INVALID'} (${basicTradeSignalValidation.signalType || 'none'}) - IP ban fallback`);
+                
+            } else {
+                // Try to calculate volume footprint normally
+                try {
+                    const openTime = candleData.openTime instanceof Date ? candleData.openTime.getTime() : candleData.openTime;
+                    const closeTime = candleData.closeTime instanceof Date ? candleData.closeTime.getTime() : candleData.closeTime;
                     
-                    // Validate trade signal
-                    const tradeSignalValidation = validateTradeSignal(
-                        reversalData.candleData,
-                        reversalData.volumeFootprint,
-                        reversalPattern.type
+                    const tickDataResult = await fetchReversalCandleTickData(
+                        candleData.symbol,
+                        openTime,
+                        closeTime,
+                        candleData.interval
                     );
                     
+                    if (tickDataResult.success && tickDataResult.trades.length > 0) {
+                        const volumeFootprint = calculateReversalVolumeFootprint(
+                            tickDataResult.trades,
+                            candleData.symbol,
+                            openTime,
+                            closeTime
+                        );
+                        
+                        if (!volumeFootprint.error) {
+                            reversalData.volumeFootprint = {
+                                poc: volumeFootprint.poc,
+                                vah: volumeFootprint.vah,
+                                val: volumeFootprint.val,
+                                totalVolume: volumeFootprint.totalVolume,
+                                valueAreaVolume: volumeFootprint.valueAreaVolume,
+                                valueAreaPercentage: volumeFootprint.valueAreaPercentage,
+                                tickDataSource: candleData.dataSource === 'websocket_realtime' ? 'realtime' : 'historical',
+                                calculatedAt: new Date(),
+                                tradesProcessed: volumeFootprint.tradesProcessed,
+                                executionTime: tickDataResult.executionTime
+                            };
+                            
+                            // Validate trade signal with volume footprint
+                            const tradeSignalValidation = validateTradeSignal(
+                                reversalData.candleData,
+                                reversalData.volumeFootprint,
+                                reversalPattern.type
+                            );
+                            
+                            reversalData.tradeSignal = {
+                                isValidSignal: tradeSignalValidation.isValidSignal,
+                                signalType: tradeSignalValidation.signalType,
+                                reason: tradeSignalValidation.reason,
+                                score: tradeSignalValidation.score || 0,
+                                criteria: tradeSignalValidation.criteria,
+                                validatedAt: new Date()
+                            };
+                            
+                            console.log(`🚦 Trade signal: ${tradeSignalValidation.isValidSignal ? '✅ VALID' : '❌ INVALID'} (${tradeSignalValidation.signalType || 'none'})`);
+                        } else {
+                            throw new Error(`Volume footprint calculation failed: ${volumeFootprint.error}`);
+                        }
+                    } else {
+                        throw new Error(`Tick data fetch failed: ${tickDataResult.error || 'No trades found'}`);
+                    }
+                    
+                } catch (volumeError) {
+                    console.log(`⚠️ Volume footprint failed for ${candleData.symbol} ${candleData.interval}: ${volumeError.message}`);
+                    this.stats.volumeFootprintSkipped++;
+                    
+                    // Fallback to basic trade signal
+                    const basicTradeSignalValidation = this.createBasicTradeSignal(reversalData.candleData, reversalPattern.type);
+                    
                     reversalData.tradeSignal = {
-                        isValidSignal: tradeSignalValidation.isValidSignal,
-                        signalType: tradeSignalValidation.signalType,
-                        reason: tradeSignalValidation.reason,
-                        score: tradeSignalValidation.score || 0,
-                        criteria: tradeSignalValidation.criteria,
-                        validatedAt: new Date()
+                        isValidSignal: basicTradeSignalValidation.isValidSignal,
+                        signalType: basicTradeSignalValidation.signalType,
+                        reason: `${basicTradeSignalValidation.reason} (Volume footprint failed)`,
+                        score: basicTradeSignalValidation.score || 0,
+                        criteria: basicTradeSignalValidation.criteria,
+                        validatedAt: new Date(),
+                        fallbackMode: true
                     };
                     
-                    console.log(`🚦 Trade signal: ${tradeSignalValidation.isValidSignal ? '✅ VALID' : '❌ INVALID'} (${tradeSignalValidation.signalType || 'none'})`);
+                    console.log(`🚦 Fallback trade signal: ${basicTradeSignalValidation.isValidSignal ? '✅ VALID' : '❌ INVALID'} (${basicTradeSignalValidation.signalType || 'none'})`);
                 }
             }
             
@@ -354,66 +418,589 @@ class HybridCandleDataManager {
     }
     
     /**
+     * Create basic trade signal validation without volume footprint
+     */
+    createBasicTradeSignal(candleData, reversalType) {
+        // Simple validation based on candle properties only
+        const bodySize = Math.abs(candleData.close - candleData.open);
+        const range = candleData.high - candleData.low;
+        const bodyRatio = range > 0 ? bodySize / range : 0;
+        
+        // Basic scoring based on candle strength
+        let score = 0;
+        let isValid = false;
+        let signalType = 'WEAK';
+        
+        // Strong candle body (>60% of range)
+        if (bodyRatio > 0.6) {
+            score += 30;
+        }
+        
+        // High volume relative to recent average (approximation)
+        if (candleData.volume > 0) {
+            score += 20;
+        }
+        
+        // Reversal type specific scoring
+        if (reversalType === 'hammer' || reversalType === 'inverted_hammer') {
+            score += 25;
+            signalType = 'REVERSAL';
+        } else if (reversalType === 'doji') {
+            score += 15;
+            signalType = 'INDECISION';
+        }
+        
+        // Determine validity
+        if (score >= 50) {
+            isValid = true;
+            signalType = score >= 70 ? 'STRONG' : 'MODERATE';
+        }
+        
+        return {
+            isValidSignal: isValid,
+            signalType: signalType,
+            reason: `Basic candle analysis - Body ratio: ${(bodyRatio * 100).toFixed(1)}%`,
+            score: score,
+            criteria: {
+                bodyRatio: bodyRatio,
+                volumePresent: candleData.volume > 0,
+                reversalType: reversalType
+            }
+        };
+    }
+    
+    /**
      * Check if artificial candles need to be generated based on time boundaries
      */
     async checkAndGenerateArtificialCandles(currentTime) {
         const currentMinute = new Date(currentTime);
+        // Normalize to minute boundary for consistent processing
+        currentMinute.setSeconds(0, 0);
+        
+        console.log(`🔍 Checking artificial candle generation at ${currentMinute.toISOString()}`);
         
         for (const interval of this.supportedIntervals) {
-            if (this.shouldGenerateArtificialCandle(currentMinute, interval)) {
-                console.log(`🔧 Generating ${interval}m artificial candles at ${currentMinute.toISOString()}`);
-                
-                try {
-                    const result = await this.generateArtificialCandleForInterval(interval);
+            try {
+                if (this.shouldGenerateArtificialCandle(currentMinute, interval)) {
+                    // Calculate the completed candle boundaries
+                    const { candleStart, candleEnd } = this.calculateCompletedCandleBoundaries(
+                        currentMinute, interval, this.TIME_CYCLES[interval]
+                    );
+                    
+                    console.log(`🔧 Generating ${interval}m candle: ${candleStart.toISOString()} → ${candleEnd.toISOString()}`);
+                    
+                    const result = await this.generateArtificialCandleForSpecificTime(
+                        interval, candleStart, candleEnd
+                    );
+                    
                     this.stats.artificialCandlesGenerated += result.candlesGenerated;
                     
-                    console.log(`✅ Generated ${result.candlesGenerated} ${interval}m artificial candles (${result.reversalPatternsDetected} reversals)`);
-                } catch (error) {
-                    console.error(`❌ Error generating ${interval}m artificial candles:`, error);
+                    if (result.candlesGenerated > 0) {
+                        console.log(`✅ Generated ${result.candlesGenerated} ${interval}m artificial candles (${result.reversalPatternsDetected || 0} reversals)`);
+                    } else {
+                        console.log(`⚠️ No ${interval}m candles generated - insufficient 1-minute data`);
+                    }
                 }
+            } catch (error) {
+                console.error(`❌ Error generating ${interval}m artificial candles:`, error);
             }
         }
     }
     
     /**
+     * Check and generate artificial candles with storage verification and duplicate prevention
+     * This method solves the timing issues by ensuring 1-minute candles are stored before artificial generation
+     */
+    async checkAndGenerateArtificialCandlesWithVerification(candleData) {
+        const currentMinute = new Date(candleData.closeTime);
+        currentMinute.setSeconds(0, 0);
+        
+        // 🚫 DUPLICATE PREVENTION: Create a unique key for this generation check
+        const generationCheckKey = `generation-check-${currentMinute.getTime()}`;
+        
+        // Check if we've already processed this minute boundary
+        if (this.generatedCandles.has(generationCheckKey)) {
+            console.log(`🔄 Generation check already processed for ${currentMinute.toISOString()}`);
+            return;
+        }
+        
+        // Mark this minute boundary as processed
+        this.generatedCandles.set(generationCheckKey, true);
+        
+        console.log(`🔍 Verified artificial candle generation check at ${currentMinute.toISOString()}`);
+        
+        // 📊 STORAGE VERIFICATION: Check if the trigger 1-minute candle is actually stored
+        const triggerCandleStored = await this.verifyOneMinuteCandleStored(candleData);
+        
+        if (!triggerCandleStored) {
+            console.log(`⚠️ Trigger 1-minute candle not yet stored for ${candleData.symbol}, retrying in 2 seconds...`);
+            
+            // Wait and retry once
+            setTimeout(async () => {
+                const retryStored = await this.verifyOneMinuteCandleStored(candleData);
+                if (retryStored) {
+                    console.log(`✅ Retry successful - trigger candle now stored for ${candleData.symbol}`);
+                    await this.processArtificialCandleGeneration(currentMinute);
+                } else {
+                    console.log(`❌ Retry failed - skipping artificial generation for ${candleData.symbol} at ${currentMinute.toISOString()}`);
+                }
+            }, 2000);
+            
+            return;
+        }
+        
+        // Proceed with artificial candle generation
+        await this.processArtificialCandleGeneration(currentMinute);
+    }
+    
+    /**
+     * Verify that a 1-minute candle is actually stored in the database
+     */
+    async verifyOneMinuteCandleStored(candleData) {
+        try {
+            const candleCollection = this.db.collection('candleData');
+            
+            const storedCandle = await candleCollection.findOne({
+                symbol: candleData.symbol,
+                interval: '1m',
+                openTime: candleData.openTime
+            });
+            
+            return storedCandle !== null;
+            
+        } catch (error) {
+            console.error(`❌ Error verifying stored candle for ${candleData.symbol}:`, error);
+            return false;
+        }
+    }
+    
+    /**
+     * Process artificial candle generation for all applicable intervals
+     */
+    async processArtificialCandleGeneration(currentMinute) {
+        for (const interval of this.supportedIntervals) {
+            try {
+                if (this.shouldGenerateArtificialCandle(currentMinute, interval)) {
+                    // Calculate the completed candle boundaries
+                    const { candleStart, candleEnd } = this.calculateCompletedCandleBoundaries(
+                        currentMinute, interval, this.TIME_CYCLES[interval]
+                    );
+                    
+                    console.log(`🔧 [Verified] Generating ${interval}m candle: ${candleStart.toISOString()} → ${candleEnd.toISOString()}`);
+                    
+                    // 📊 ENHANCED STORAGE VERIFICATION: Check if we have sufficient 1-minute data before generation
+                    const hasEnoughData = await this.verifyEnoughOneMinuteData(
+                        candleStart, candleEnd, interval
+                    );
+                    
+                    if (!hasEnoughData.sufficient) {
+                        console.log(`⚠️ Insufficient verified 1-minute data for ${interval}m generation:`);
+                        console.log(`   └── Required: ${hasEnoughData.required}, Available: ${hasEnoughData.available}`);
+                        console.log(`   └── Missing candles likely still being processed, will retry next cycle`);
+                        continue;
+                    }
+                    
+                    const result = await this.generateArtificialCandleForSpecificTime(
+                        interval, candleStart, candleEnd
+                    );
+                    
+                    this.stats.artificialCandlesGenerated += result.candlesGenerated;
+                    
+                    if (result.candlesGenerated > 0) {
+                        console.log(`✅ [Verified] Generated ${result.candlesGenerated} ${interval}m artificial candles (${result.reversalPatternsDetected || 0} reversals)`);
+                    } else {
+                        console.log(`⚠️ [Verified] No ${interval}m candles generated despite verification - check data quality`);
+                    }
+                }
+            } catch (error) {
+                console.error(`❌ Error in verified ${interval}m artificial candle generation:`, error);
+            }
+        }
+    }
+    
+    /**
+     * Verify that enough 1-minute data exists for artificial candle generation
+     */
+    async verifyEnoughOneMinuteData(startTime, endTime, intervalMinutes) {
+        try {
+            const candleCollection = this.db.collection('candleData');
+            const selectedSymbols = await this.getSelectedSymbols();
+            
+            if (selectedSymbols.length === 0) {
+                return { sufficient: false, required: 0, available: 0 };
+            }
+            
+            // Check data availability across all symbols
+            let totalRequired = 0;
+            let totalAvailable = 0;
+            
+            for (const symbol of selectedSymbols.slice(0, 3)) { // Check first 3 symbols as sample
+                const oneMinuteCandles = await candleCollection.find({
+                    symbol: symbol,
+                    interval: '1m',
+                    openTime: { $gte: startTime },
+                    closeTime: { $lt: endTime },
+                    closeTime: { $lt: new Date(Date.now() - 5000) } // Only candles at least 5 seconds old
+                }).count();
+                
+                totalRequired += intervalMinutes;
+                totalAvailable += oneMinuteCandles;
+            }
+            
+            const minRequired = Math.floor(totalRequired * 0.8); // 80% threshold
+            const sufficient = totalAvailable >= minRequired;
+            
+            return {
+                sufficient: sufficient,
+                required: totalRequired,
+                available: totalAvailable,
+                threshold: minRequired
+            };
+            
+        } catch (error) {
+            console.error(`❌ Error verifying 1-minute data availability:`, error);
+            return { sufficient: false, required: 0, available: 0 };
+        }
+    }
+    
+    /**
      * Check if an artificial candle should be generated for the given interval
+     * Uses simplified modulo-based approach while preserving cycle alignment
      */
     shouldGenerateArtificialCandle(currentTime, intervalMinutes) {
         const cycleMinutes = this.TIME_CYCLES[intervalMinutes];
         
-        // Calculate midnight UTC
-        const midnightUTC = new Date(Date.UTC(currentTime.getUTCFullYear(), currentTime.getUTCMonth(), currentTime.getUTCDate(), 0, 0, 0, 0));
+        // Get current minute of day (0-1439)
+        const minuteOfDay = currentTime.getUTCHours() * 60 + currentTime.getUTCMinutes();
         
-        // Calculate time since midnight
-        const msSinceMidnight = currentTime.getTime() - midnightUTC.getTime();
-        const cycleMs = cycleMinutes * 60 * 1000;
-        const intervalMs = intervalMinutes * 60 * 1000;
+        // Check if we're at a cycle boundary and interval boundary
+        const cyclePosition = minuteOfDay % cycleMinutes;
+        const intervalPosition = cyclePosition % intervalMinutes;
         
-        // Find current cycle and interval
-        const currentCycleIndex = Math.floor(msSinceMidnight / cycleMs);
-        const currentCycleStart = midnightUTC.getTime() + (currentCycleIndex * cycleMs);
-        const msSinceCycleStart = currentTime.getTime() - currentCycleStart;
-        const currentIntervalIndex = Math.floor(msSinceCycleStart / intervalMs);
+        // Generate when we complete an interval within the cycle
+        const shouldGenerate = intervalPosition === 0 && cyclePosition < cycleMinutes;
         
-        // Calculate interval boundaries
-        const intervalStart = currentCycleStart + (currentIntervalIndex * intervalMs);
-        const intervalEnd = intervalStart + intervalMs;
+        if (shouldGenerate) {
+            console.log(`🎯 Triggering ${intervalMinutes}m generation: minute ${minuteOfDay}, cycle pos ${cyclePosition}, interval pos ${intervalPosition}`);
+        }
         
-        // Check if the current time aligns with interval end (within 1 minute tolerance)
-        const timeSinceIntervalEnd = currentTime.getTime() - intervalEnd;
-        
-        // Should generate if we're within 1 minute after interval end
-        return timeSinceIntervalEnd >= 0 && timeSinceIntervalEnd < 60000;
+        return shouldGenerate;
     }
     
     /**
-     * Generate artificial candles for a specific interval
+     * Calculate the boundaries of the just-completed candle
+     */
+    calculateCompletedCandleBoundaries(currentTime, intervalMinutes, cycleMinutes) {
+        const minuteOfDay = currentTime.getUTCHours() * 60 + currentTime.getUTCMinutes();
+        
+        // Find current position within cycle
+        const cycleStart = Math.floor(minuteOfDay / cycleMinutes) * cycleMinutes;
+        const intervalIndex = Math.floor((minuteOfDay - cycleStart) / intervalMinutes);
+        
+        // Calculate the PREVIOUS (completed) candle boundaries
+        const completedCandleStartMinute = cycleStart + ((intervalIndex - 1) * intervalMinutes);
+        const completedCandleEndMinute = completedCandleStartMinute + intervalMinutes;
+        
+        // Convert back to Date objects
+        const candleStart = new Date(currentTime);
+        candleStart.setUTCHours(Math.floor(completedCandleStartMinute / 60));
+        candleStart.setUTCMinutes(completedCandleStartMinute % 60);
+        candleStart.setUTCSeconds(0, 0);
+        
+        const candleEnd = new Date(candleStart);
+        candleEnd.setUTCMinutes(candleEnd.getUTCMinutes() + intervalMinutes);
+        candleEnd.setUTCMilliseconds(-1); // End just before next candle
+        
+        return { candleStart, candleEnd };
+    }
+    
+    /**
+     * Generate artificial candles for a specific interval (legacy method - maintained for compatibility)
      */
     async generateArtificialCandleForInterval(intervalMinutes) {
-        // This is a simplified version - in practice, you'd import generateArtificialCandleData
-        // For now, return mock results
         const generateArtificialCandleData = require('./generateArtificialCandleData');
         return await generateArtificialCandleData(this.client, this.dbName, intervalMinutes);
+    }
+    
+    /**
+     * Generate artificial candles for a specific time range with duplicate prevention
+     * This method is optimized for real-time processing
+     */
+    async generateArtificialCandleForSpecificTime(intervalMinutes, startTime, endTime) {
+        const startTimeKey = startTime.getTime();
+        console.log(`📊 Generating ${intervalMinutes}m candle for period: ${startTime.toISOString()} → ${endTime.toISOString()}`);
+        
+        const results = {
+            candlesGenerated: 0,
+            reversalPatternsDetected: 0,
+            reversalPatternsSaved: 0,
+            symbolsProcessed: 0,
+            duplicatesPrevented: 0,
+            errors: []
+        };
+        
+        try {
+            // Get selected symbols
+            const selectedSymbols = await this.getSelectedSymbols();
+            if (selectedSymbols.length === 0) {
+                console.log('⚠️ No symbols selected for artificial candle generation');
+                return results;
+            }
+            
+            results.symbolsProcessed = selectedSymbols.length;
+            const candleCollection = this.db.collection('candleData');
+            
+            // Process each symbol with duplicate prevention
+            for (const symbol of selectedSymbols) {
+                try {
+                    // 🚫 DUPLICATE PREVENTION - Create unique key for this candle
+                    const candleKey = `${symbol}-${intervalMinutes}m-${startTimeKey}`;
+                    
+                    // Check if we've already generated this candle
+                    if (this.generatedCandles.has(candleKey)) {
+                        console.log(`🔄 Duplicate prevented: ${symbol} ${intervalMinutes}m at ${startTime.toISOString()}`);
+                        results.duplicatesPrevented++;
+                        this.stats.duplicatesPrevented++;
+                        continue;
+                    }
+                    
+                    // Check if there's already a generation lock for this candle
+                    if (this.generationLocks.has(candleKey)) {
+                        console.log(`⏳ Generation already in progress: ${symbol} ${intervalMinutes}m at ${startTime.toISOString()}`);
+                        results.duplicatesPrevented++;
+                        this.stats.duplicatesPrevented++;
+                        continue;
+                    }
+                    
+                    // Create generation lock
+                    const generationPromise = this.generateSingleArtificialCandle(
+                        symbol, intervalMinutes, startTime, endTime, candleCollection
+                    );
+                    this.generationLocks.set(candleKey, generationPromise);
+                    
+                    try {
+                        const candleResult = await generationPromise;
+                        
+                        if (candleResult.success) {
+                            // Mark as generated
+                            this.generatedCandles.set(candleKey, true);
+                            results.candlesGenerated++;
+                            
+                            if (candleResult.reversalDetected) {
+                                results.reversalPatternsDetected++;
+                                if (candleResult.reversalSaved) {
+                                    results.reversalPatternsSaved++;
+                                }
+                            }
+                        }
+                        
+                    } finally {
+                        // Always remove the lock
+                        this.generationLocks.delete(candleKey);
+                    }
+                    
+                } catch (symbolError) {
+                    console.error(`❌ Error processing ${symbol} for ${intervalMinutes}m:`, symbolError);
+                    results.errors.push(`${symbol}: ${symbolError.message}`);
+                }
+            }
+            
+            // Clean up old generation tracking (keep only last hour)
+            this.cleanupGenerationTracking();
+            
+        } catch (error) {
+            console.error(`❌ Error in generateArtificialCandleForSpecificTime:`, error);
+            results.errors.push(`Main error: ${error.message}`);
+        }
+        
+        return results;
+    }
+    
+    /**
+     * Generate a single artificial candle for a symbol with proper error handling
+     */
+    async generateSingleArtificialCandle(symbol, intervalMinutes, startTime, endTime, candleCollection) {
+        const result = {
+            success: false,
+            reversalDetected: false,
+            reversalSaved: false
+        };
+        
+        try {
+            // Check if artificial candle already exists in database
+            const existingCandle = await candleCollection.findOne({
+                symbol: symbol,
+                interval: `${intervalMinutes}m`,
+                openTime: startTime
+            });
+            
+            if (existingCandle) {
+                console.log(`📋 Artificial candle already exists: ${symbol} ${intervalMinutes}m at ${startTime.toISOString()}`);
+                result.success = true;
+                return result;
+            }
+            
+            // Get ALL closed 1-minute candles for this symbol within the exact time range
+            const oneMinuteCandles = await candleCollection.find({
+                symbol: symbol,
+                interval: '1m',
+                openTime: { $gte: startTime },
+                closeTime: { $lt: endTime },
+                // Only candles that are confirmed closed (at least 10 seconds old)
+                closeTime: { $lt: new Date(Date.now() - 10000) }
+            }).sort({ openTime: 1 }).toArray();
+            
+            // Check if we have sufficient data (at least 80% of expected candles)
+            const minCandlesRequired = Math.floor(intervalMinutes * 0.8);
+            
+            if (oneMinuteCandles.length < minCandlesRequired) {
+                console.log(`⚠️ Insufficient data for ${symbol} ${intervalMinutes}m candle: ${oneMinuteCandles.length}/${intervalMinutes} 1-minute candles`);
+                return result;
+            }
+            
+            // Create the artificial candle from 1-minute data
+            const artificialCandle = this.createArtificialCandle(
+                oneMinuteCandles, symbol, intervalMinutes, startTime, endTime
+            );
+            
+            // Store the artificial candle
+            await candleCollection.updateOne(
+                { 
+                    symbol: symbol, 
+                    interval: `${intervalMinutes}m`,
+                    openTime: startTime 
+                },
+                { $set: artificialCandle },
+                { upsert: true }
+            );
+            
+            result.success = true;
+            
+            // Detect reversal pattern for this artificial candle
+            const reversalPattern = detectReversalCandle(artificialCandle);
+            
+            if (reversalPattern) {
+                result.reversalDetected = true;
+                console.log(`🔄 Reversal pattern detected in ${symbol} ${intervalMinutes}m artificial candle: ${reversalPattern.type}`);
+                
+                // Check if this reversal already exists
+                const reversalCollection = this.db.collection('reversalCandles');
+                const existingReversal = await reversalCollection.findOne({
+                    symbol: symbol,
+                    interval: `${intervalMinutes}m`,
+                    openTime: startTime
+                });
+                
+                if (!existingReversal) {
+                    await this.processReversalCandle(artificialCandle, reversalPattern);
+                    result.reversalSaved = true;
+                }
+            }
+            
+        } catch (error) {
+            console.error(`❌ Error generating single artificial candle for ${symbol} ${intervalMinutes}m:`, error);
+            throw error;
+        }
+        
+        return result;
+    }
+    
+    /**
+     * Clean up old generation tracking entries to prevent memory leaks
+     */
+    cleanupGenerationTracking() {
+        const oneHourAgo = Date.now() - (60 * 60 * 1000);
+        
+        // Clean up generated candles map
+        for (const [key, value] of this.generatedCandles.entries()) {
+            try {
+                // Extract timestamp from key (format: symbol-interval-timestamp)
+                const timestamp = parseInt(key.split('-').pop());
+                if (timestamp < oneHourAgo) {
+                    this.generatedCandles.delete(key);
+                }
+            } catch (error) {
+                // If we can't parse, delete it to be safe
+                this.generatedCandles.delete(key);
+            }
+        }
+        
+        // Clean up generation locks map (shouldn't have old entries, but just in case)
+        for (const [key, promise] of this.generationLocks.entries()) {
+            try {
+                const timestamp = parseInt(key.split('-').pop());
+                if (timestamp < oneHourAgo) {
+                    this.generationLocks.delete(key);
+                }
+            } catch (error) {
+                this.generationLocks.delete(key);
+            }
+        }
+    }
+    
+    /**
+     * Create an artificial candle from 1-minute candles
+     */
+    createArtificialCandle(oneMinuteCandles, symbol, intervalMinutes, startTime, endTime) {
+        // Sort candles by openTime to ensure correct order
+        oneMinuteCandles.sort((a, b) => a.openTime - b.openTime);
+        
+        const firstCandle = oneMinuteCandles[0];
+        const lastCandle = oneMinuteCandles[oneMinuteCandles.length - 1];
+        
+        // Calculate OHLCV by aggregating all 1-minute candles
+        const high = Math.max(...oneMinuteCandles.map(c => c.high));
+        const low = Math.min(...oneMinuteCandles.map(c => c.low));
+        const volume = oneMinuteCandles.reduce((sum, c) => sum + c.volume, 0);
+        const quoteAssetVolume = oneMinuteCandles.reduce((sum, c) => sum + c.quoteAssetVolume, 0);
+        const numberOfTrades = oneMinuteCandles.reduce((sum, c) => sum + c.numberOfTrades, 0);
+        const takerBuyBaseAssetVolume = oneMinuteCandles.reduce((sum, c) => sum + c.takerBuyBaseAssetVolume, 0);
+        const takerBuyQuoteAssetVolume = oneMinuteCandles.reduce((sum, c) => sum + c.takerBuyQuoteAssetVolume, 0);
+        
+        return {
+            symbol,
+            interval: `${intervalMinutes}m`,
+            openTime: startTime,
+            closeTime: endTime,
+            open: firstCandle.open,
+            high,
+            low,
+            close: lastCandle.close,
+            volume,
+            quoteAssetVolume,
+            numberOfTrades,
+            takerBuyBaseAssetVolume,
+            takerBuyQuoteAssetVolume,
+            artificiallyGenerated: true,
+            sourceInterval: '1m',
+            sourceCandles: oneMinuteCandles.length,
+            fetchedAt: new Date(),
+            dataSource: 'websocket_realtime_artificial'
+        };
+    }
+    
+    /**
+     * Get selected symbols from database
+     */
+    async getSelectedSymbols() {
+        try {
+            const collection = this.db.collection('selectedSymbols');
+            
+            // Get the most recent document
+            const latestSelection = await collection.findOne(
+                {}, 
+                { sort: { timestamp: -1 } }
+            );
+            
+            if (latestSelection && latestSelection.symbols) {
+                return latestSelection.symbols;
+            }
+            
+            return [];
+        } catch (error) {
+            console.error('Error fetching selected symbols:', error);
+            return [];
+        }
     }
     
     /**
