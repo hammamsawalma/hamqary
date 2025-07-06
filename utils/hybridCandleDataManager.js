@@ -191,19 +191,12 @@ class HybridCandleDataManager {
                         console.error('❌ Gap recovery failed:', error);
                     }
                 }
-            });
+            }, selectedSymbols); // Pass symbols for immediate connection
             
             // Initialize last candle timestamps for gap detection
             if (selectedSymbols.length > 0) {
                 console.log('📊 Initializing gap detection timestamps...');
                 await this.candleCollector.initializeLastCandleTimestamps(selectedSymbols);
-            }
-            
-            // Subscribe to selected symbols
-            if (selectedSymbols.length > 0) {
-                const results = this.candleCollector.subscribeToSymbols(selectedSymbols);
-                const successCount = results.filter(r => r.success).length;
-                console.log(`📊 Subscribed to ${successCount}/${selectedSymbols.length} real-time candlestick streams`);
             }
             
             return true;

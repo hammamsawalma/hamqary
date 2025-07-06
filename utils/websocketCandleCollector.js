@@ -49,11 +49,17 @@ class WebSocketCandleCollector {
     }
 
     /**
-     * Connect to Binance WebSocket
+     * Connect to Binance WebSocket with initial symbols
      */
-    async connect() {
+    async connect(initialSymbols = []) {
         try {
-            console.log('🔗 Connecting to Binance WebSocket for candlestick data...');
+            // Validate that we have symbols to subscribe to
+            if (initialSymbols.length === 0) {
+                console.log('⚠️ No symbols provided for WebSocket connection, skipping connection');
+                return false;
+            }
+            
+            console.log(`🔗 Connecting to Binance WebSocket for ${initialSymbols.length} symbols...`);
             
             this.ws = new WebSocket(this.baseUrl);
             
@@ -63,6 +69,16 @@ class WebSocketCandleCollector {
                 this.reconnectAttempts = 0;
                 this.stats.connectedAt = new Date();
                 this.startHeartbeat();
+                
+                // Immediately subscribe to initial symbols to prevent 400 errors
+                if (initialSymbols && initialSymbols.length > 0) {
+                    console.log(`📊 Immediately subscribing to ${initialSymbols.length} streams after connection...`);
+                    
+                    // Subscribe to all symbols right after connection
+                    setTimeout(() => {
+                        this.subscribeToSymbols(initialSymbols);
+                    }, 100); // Small delay to ensure connection is fully established
+                }
                 
                 if (this.onConnectCallback) {
                     this.onConnectCallback();
@@ -350,14 +366,10 @@ class WebSocketCandleCollector {
                 
                 console.log(`📊 Found ${currentSymbols.length} symbols in database for reconnection: ${currentSymbols.slice(0, 3).join(', ')}${currentSymbols.length > 3 ? '...' : ''}`);
                 
-                await this.connect();
+                await this.connect(currentSymbols);
                 
-                // Update our symbol set and resubscribe to current symbols
-                this.subscribedSymbols.clear(); // Clear old symbols
-                
-                for (const symbol of currentSymbols) {
-                    this.subscribeToSymbol(symbol);
-                }
+                // Clear old symbols as they will be set during connection
+                this.subscribedSymbols.clear();
                 
                 console.log(`✅ Reconnected and resubscribed to ${this.subscribedSymbols.size} candlestick streams`);
                 
@@ -649,11 +661,11 @@ function getGlobalCandleCollector(options = {}) {
 /**
  * Initialize and connect global candlestick collector
  */
-async function initializeGlobalCandleCollector(options = {}) {
+async function initializeGlobalCandleCollector(options = {}, initialSymbols = []) {
     const collector = getGlobalCandleCollector(options);
     
     if (!collector.isConnected) {
-        await collector.connect();
+        await collector.connect(initialSymbols);
     }
     
     return collector;
