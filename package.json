@@ -27,5 +27,8 @@
     "mongodb": "^6.17.0",
     "node-cron": "^4.2.0",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "axios": "^1.10.0"
   }
 }

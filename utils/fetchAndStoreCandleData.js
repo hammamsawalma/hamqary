@@ -72,29 +72,32 @@ async function fetchAndStoreCandleData(client, dbName, interval = '1m', options 
         const symbolCandles = candleData[symbol];
         console.log(`📈 Processing ${symbolCandles.length} candles for ${symbol}`);
 
-        // Filter out non-closed candles to prevent invalid signals
+        // Validate candle close times - reject any future-dated candles
         const currentTime = Date.now();
-        const closedCandles = symbolCandles.filter(candle => {
+        const validCandles = symbolCandles.filter(candle => {
           const candleCloseTime = candle.closeTime;
-          const bufferTime = 10000; // 10 seconds buffer
-          const isClosed = candleCloseTime + bufferTime < currentTime;
+          const isClosed = candleCloseTime < currentTime;
           
           if (!isClosed) {
-            console.log(`⏰ Skipping non-closed candle for ${symbol}: close time ${new Date(candleCloseTime).toISOString()} (current: ${new Date(currentTime).toISOString()})`);
+            console.log(`⚠️ Rejecting future candle for ${symbol}: close time ${new Date(candleCloseTime).toISOString()} >= current ${new Date(currentTime).toISOString()}`);
           }
           
           return isClosed;
         });
 
-        if (closedCandles.length === 0) {
-          console.log(`⚠️ No closed candles found for ${symbol}, skipping signal processing`);
+        if (validCandles.length !== symbolCandles.length) {
+          console.log(`⚠️ Filtered out ${symbolCandles.length - validCandles.length} future-dated candles for ${symbol}`);
+        }
+
+        if (validCandles.length === 0) {
+          console.log(`⚠️ No valid closed candles found for ${symbol}, skipping signal processing`);
           continue;
         }
 
-        console.log(`✅ Processing ${closedCandles.length} closed candles for ${symbol} (filtered out ${symbolCandles.length - closedCandles.length} non-closed)`);
+        console.log(`✅ Processing ${validCandles.length} validated closed candles for ${symbol}`);
 
-        // Prepare documents for insertion
-        const documents = closedCandles.map(candle => ({
+        // Prepare documents for insertion (using validated candles only)
+        const documents = validCandles.map(candle => ({
           symbol,
           interval,
           openTime: new Date(candle.openTime),
@@ -159,9 +162,13 @@ async function fetchAndStoreCandleData(client, dbName, interval = '1m', options 
                   reversalPattern: reversalPattern
                 };
 
-                // Calculate volume footprint for 1-20 minute intervals only
+                // Calculate volume footprint for 1-60 minute intervals
                 const validIntervals = ['1m', '2m', '3m', '4m', '5m', '6m', '7m', '8m', '9m', '10m', 
-                                       '11m', '12m', '13m', '14m', '15m', '16m', '17m', '18m', '19m', '20m'];
+                                       '11m', '12m', '13m', '14m', '15m', '16m', '17m', '18m', '19m', '20m',
+                                       '21m', '22m', '23m', '24m', '25m', '26m', '27m', '28m', '29m', '30m',
+                                       '31m', '32m', '33m', '34m', '35m', '36m', '37m', '38m', '39m', '40m',
+                                       '41m', '42m', '43m', '44m', '45m', '46m', '47m', '48m', '49m', '50m',
+                                       '51m', '52m', '53m', '54m', '55m', '56m', '57m', '58m', '59m', '60m'];
                 
                 if (validIntervals.includes(doc.interval)) {
                   try {
@@ -249,7 +256,7 @@ async function fetchAndStoreCandleData(client, dbName, interval = '1m', options 
                     // Continue without volume footprint data
                   }
                 } else {
-                  console.log(`ℹ️ Skipping volume footprint for ${doc.interval} - only processing 1-20 minute intervals`);
+                  console.log(`ℹ️ Skipping volume footprint for ${doc.interval} - only processing 1-60 minute intervals`);
                 }
                 
                 await saveReversalCandle(client, dbName, reversalData);

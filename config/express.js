@@ -15,6 +15,9 @@ function configureExpress() {
     app.use(ejsLayouts);
     app.set('layout', 'layout');
 
+    // Serve static files from public directory
+    app.use(express.static('public'));
+
     // Add middleware for parsing form data
     app.use(express.urlencoded({ extended: true }));
     app.use(express.json());

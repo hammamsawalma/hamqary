@@ -42,9 +42,9 @@ async function loadHistoricalCandleData(client, dbName, symbols) {
 
     console.log(`📊 Processing ${symbols.length} symbols: ${symbols.join(', ')}`);
     
-    // Step 1: Calculate time range for historical data (last 60 minutes)
+    // Step 1: Calculate time range for historical data (last 180 minutes)
     const endTime = new Date();
-    const startTime = new Date(endTime.getTime() - (60 * 60 * 1000)); // 60 minutes ago
+    const startTime = new Date(endTime.getTime() - (180 * 60 * 1000)); // 180 minutes ago
     
     console.log(`🕒 Loading historical candle data from ${startTime.toISOString()} to ${endTime.toISOString()}`);
     
@@ -52,7 +52,7 @@ async function loadHistoricalCandleData(client, dbName, symbols) {
     const options = {
       startTime: startTime.getTime(),
       endTime: endTime.getTime(),
-      limit: 60 // Up to 60 candles (1 per minute)
+      limit: 180 // Up to 180 candles (1 per minute)
     };
     
     const fetchResults = await fetchAndStoreCandleData(client, dbName, '1m', options);
@@ -62,8 +62,10 @@ async function loadHistoricalCandleData(client, dbName, symbols) {
       results.errors = results.errors.concat(fetchResults.errors);
     }
     
-    // Step 3: Generate artificial candle data for all intervals (2-20 minutes)
-    const intervals = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
+    // Step 3: Generate artificial candle data for all intervals (2-60 minutes)
+    const intervals = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+                      21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+                      41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60];
     
     for (const interval of intervals) {
       try {

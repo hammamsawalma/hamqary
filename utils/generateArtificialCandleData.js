@@ -30,12 +30,20 @@ async function generateArtificialCandleData(client, dbName, interval) {
     2: 60, 3: 60, 4: 60, 5: 60, 6: 60,
     7: 420, 8: 120, 9: 360, 10: 60, 11: 660,
     12: 60, 13: 780, 14: 420, 15: 60, 16: 240,
-    17: 1020, 18: 360, 19: 1140, 20: 60
+    17: 1020, 18: 360, 19: 1140, 20: 60,
+    21: 420, 22: 660, 23: 1380, 24: 120, 25: 300,
+    26: 780, 27: 540, 28: 420, 29: 1740, 30: 60,
+    31: 1860, 32: 480, 33: 660, 34: 1020, 35: 420,
+    36: 180, 37: 2220, 38: 1140, 39: 780, 40: 120,
+    41: 2460, 42: 420, 43: 2580, 44: 660, 45: 180,
+    46: 1380, 47: 2820, 48: 240, 49: 2940, 50: 300,
+    51: 1020, 52: 780, 53: 3180, 54: 540, 55: 660,
+    56: 840, 57: 1140, 58: 1740, 59: 3540, 60: 60
   };
   
   const cycleMinutes = INTERVAL_CYCLES[interval];
   if (!cycleMinutes) {
-    throw new Error(`Unsupported interval: ${interval}m. Only 2-20 minute intervals are supported.`);
+    throw new Error(`Unsupported interval: ${interval}m. Only 2-60 minute intervals are supported.`);
   }
   
   const results = {
@@ -124,6 +132,9 @@ async function generateArtificialCandleData(client, dbName, interval) {
         // Step 5: Generate artificial candles from the grouped data
         const artificialCandles = generateCandlesFromGroups(groupedCandles, symbol, interval);
         
+        // Since we're using proper time boundaries and 1-minute base data, artificial candles should be properly closed
+        console.log(`✅ Processing ${artificialCandles.length} ${interval}m artificial candles for ${symbol}`);
+        
         // Step 6: Store the artificial candles and detect reversal patterns
         let reversalPatternsForSymbol = 0;
         let reversalPatternsSavedForSymbol = 0;
@@ -174,9 +185,13 @@ async function generateArtificialCandleData(client, dbName, interval) {
                   reversalPattern: reversalPattern
                 };
 
-                // Calculate volume footprint for ALL 1-20 minute intervals using 1-minute tick aggregation
+                // Calculate volume footprint for ALL 1-60 minute intervals using 1-minute tick aggregation
                 const validIntervals = ['1m', '2m', '3m', '4m', '5m', '6m', '7m', '8m', '9m', '10m', 
-                                       '11m', '12m', '13m', '14m', '15m', '16m', '17m', '18m', '19m', '20m'];
+                                       '11m', '12m', '13m', '14m', '15m', '16m', '17m', '18m', '19m', '20m',
+                                       '21m', '22m', '23m', '24m', '25m', '26m', '27m', '28m', '29m', '30m',
+                                       '31m', '32m', '33m', '34m', '35m', '36m', '37m', '38m', '39m', '40m',
+                                       '41m', '42m', '43m', '44m', '45m', '46m', '47m', '48m', '49m', '50m',
+                                       '51m', '52m', '53m', '54m', '55m', '56m', '57m', '58m', '59m', '60m'];
                 
                 if (validIntervals.includes(candle.interval)) {
                   try {
@@ -254,7 +269,7 @@ async function generateArtificialCandleData(client, dbName, interval) {
                     // Continue without volume footprint data
                   }
                 } else {
-                  console.log(`ℹ️ Skipping volume footprint for ${candle.interval} - only processing 1-20 minute intervals`);
+                  console.log(`ℹ️ Skipping volume footprint for ${candle.interval} - only processing 1-60 minute intervals`);
                 }
                 
                 await saveReversalCandle(client, dbName, reversalData);

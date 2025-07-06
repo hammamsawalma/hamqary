@@ -79,8 +79,12 @@ function setupCandleDataCronJob(client, dbName) {
         console.log(`\n🕒 Running scheduled candle data job at ${startTime.toISOString()}`);
         
         try {
+            // Calculate time-based window to fetch closed candles (more conservative)
+            const now = Date.now();
             const options = {
-                limit: 3 // Fetch last 3 candles to ensure we have closed ones
+                // Fetch candles from 10 minutes ago to 2 minutes ago to ensure they're definitely closed
+                startTime: now - (10 * 60 * 1000), // 10 minutes ago
+                endTime: now - (2 * 60 * 1000)     // 2 minutes ago
             };
             
             // Process all real data intervals
@@ -132,8 +136,10 @@ function setupArtificialCandleDataCronJobs(client, dbName) {
 
     console.log('⏰ Setting up consolidated artificial candle data cron job...');
     
-    // Define the intervals for which we want to generate artificial candles (2-20 minutes)
-    const intervals = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
+    // Define the intervals for which we want to generate artificial candles (2-60 minutes)
+    const intervals = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+                      21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+                      41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60];
     
     // Single cron job that checks all intervals and queues them for processing
     const artificialCandleJob = cron.schedule('* * * * *', async () => {
@@ -198,27 +204,45 @@ async function processArtificialCandleQueue(client, dbName) {
     console.log(`\n🔄 Processing artificial candle queue with ${artificialCandleQueue.length} intervals...`);
     
     try {
-        // Process intervals in batches to avoid overwhelming the system
-        const batchSize = 3; // Process 3 intervals at a time
+        // Process intervals in optimized batches for 60 intervals
+        const batchSize = 5; // Increased batch size for better efficiency
+        let processedCount = 0;
+        const totalIntervals = artificialCandleQueue.length;
         
         while (artificialCandleQueue.length > 0) {
             const batch = artificialCandleQueue.splice(0, batchSize);
-            console.log(`📊 Processing batch: ${batch.join('m, ')}m intervals`);
+            console.log(`📊 Processing batch ${Math.ceil(processedCount/batchSize) + 1}: ${batch.join('m, ')}m intervals (${processedCount + batch.length}/${totalIntervals})`);
             
             // Process batch sequentially to control resource usage
             for (const interval of batch) {
                 try {
+                    const intervalStart = performance.now();
                     console.log(`🕒 Generating ${interval}m artificial candles at ${new Date().toISOString()}`);
-                    await generateArtificialCandleData(client, dbName, interval);
-                    console.log(`✅ Successfully generated ${interval}m candles`);
+                    
+                    const result = await generateArtificialCandleData(client, dbName, interval);
+                    const intervalDuration = Math.round(performance.now() - intervalStart);
+                    
+                    console.log(`✅ Successfully generated ${interval}m candles in ${intervalDuration}ms (${result.candlesGenerated} candles, ${result.reversalPatternsDetected} reversals)`);
+                    processedCount++;
+                    
                 } catch (error) {
-                    console.error(`❌ Failed to generate ${interval}m candles:`, error);
+                    console.error(`❌ Failed to generate ${interval}m candles:`, error.message);
+                    processedCount++;
+                    
+                    // If we get rate limited, add longer delay
+                    if (error.message.includes('rate limit') || error.message.includes('banned')) {
+                        console.log(`⏳ Rate limit detected, adding extended delay...`);
+                        await new Promise(resolve => setTimeout(resolve, 5000)); // 5 second delay
+                    }
                 }
             }
             
-            // Add a small delay between batches to prevent overwhelming the system
+            // Progressive delay based on batch number to prevent API overload
             if (artificialCandleQueue.length > 0) {
-                await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay
+                const batchNumber = Math.ceil(processedCount / batchSize);
+                const delay = Math.min(1000 + (batchNumber * 500), 5000); // Increase delay with each batch, max 5s
+                console.log(`⏳ Batch completed, waiting ${delay}ms before next batch...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
             }
         }
         
@@ -251,8 +275,12 @@ async function runInitialCandleDataFetch(client, dbName) {
     const realDataIntervals = ['1m', '3m', '5m', '15m']; // Only Binance-supported intervals
     
     try {
+        // Use time-based window for initial fetch as well
+        const now = Date.now();
         const options = {
-            limit: 3 // Fetch last 3 candles to ensure we have closed ones
+            // Fetch candles from 10 minutes ago to 1 minute ago for initial load
+            startTime: now - (10 * 60 * 1000), // 10 minutes ago
+            endTime: now - (1 * 60 * 1000)     // 1 minute ago
         };
         
         // Process all intervals
@@ -286,8 +314,10 @@ async function runInitialArtificialCandleDataGeneration(client, dbName) {
 
     console.log('🚀 Running initial artificial candle data generation on startup...');
     
-    // Define the intervals for which we want to generate artificial candles (2-20 minutes)
-    const intervals = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
+    // Define the intervals for which we want to generate artificial candles (2-60 minutes)
+    const intervals = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+                      21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+                      41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60];
     
     for (const interval of intervals) {
         try {
@@ -416,14 +446,34 @@ function getCronJobStatus() {
  */
 function logCronJobStatus() {
     const status = getCronJobStatus();
-    console.log('\n📊 Cron Job Status Report:');
+    const { getRateLimiterStatus } = require('../utils/fetchHistoricalTickData');
+    const rateLimitStatus = getRateLimiterStatus();
+    
+    console.log('\n📊 System Health Report:');
     console.log(`├── Candle Data Job: ${status.candleDataJob.running ? '🟢 Running' : '🔴 Idle'}`);
     console.log(`├── Last Run: ${status.candleDataJob.lastRun ? status.candleDataJob.lastRun.toISOString() : 'Never'}`);
     console.log(`├── Last Duration: ${status.candleDataJob.lastDuration}ms`);
     console.log(`├── Artificial Candle Jobs: ${status.artificialCandleJobs.running ? '🟢 Running' : '🔴 Idle'}`);
-    console.log(`├── Queue Length: ${status.artificialCandleJobs.queueLength}`);
+    console.log(`├── Queue Length: ${status.artificialCandleJobs.queueLength} intervals`);
     console.log(`├── Processing Queue: ${status.artificialCandleJobs.processingQueue ? '🟢 Yes' : '🔴 No'}`);
+    console.log(`├── API Rate Limit: ${rateLimitStatus.requestCount}/${rateLimitStatus.hourlyLimit} requests used`);
+    console.log(`├── API Ban Status: ${rateLimitStatus.isBanned ? '🚫 BANNED' : '✅ Active'}`);
+    console.log(`├── Top Movers Job: ${status.topMoversJob ? (jobStatus.topMoversJob.running ? '🟢 Running' : '🔴 Idle') : 'Not initialized'}`);
     console.log(`└── Total Active Jobs: ${status.systemHealth.totalActiveJobs}`);
+    
+    // Warning for potential issues
+    if (rateLimitStatus.isBanned) {
+        const waitMinutes = Math.round((rateLimitStatus.banExpiry - Date.now()) / 1000 / 60);
+        console.log(`⚠️  WARNING: API is banned for ${waitMinutes} more minutes`);
+    }
+    
+    if (rateLimitStatus.requestCount > rateLimitStatus.hourlyLimit * 0.8) {
+        console.log(`⚠️  WARNING: API rate limit at ${Math.round((rateLimitStatus.requestCount / rateLimitStatus.hourlyLimit) * 100)}%`);
+    }
+    
+    if (status.artificialCandleJobs.queueLength > 10) {
+        console.log(`⚠️  WARNING: Large queue backlog (${status.artificialCandleJobs.queueLength} intervals)`);
+    }
 }
 
 /**
@@ -576,8 +626,8 @@ function setupDataCleanupCronJob(client, dbName) {
 
     console.log('🧹 Setting up data cleanup cron job...');
     
-    // Schedule cleanup to run every hour at minute 30 (offset from top movers job)
-    const cleanupJob = cron.schedule('30 * * * *', async () => {
+    // Schedule cleanup to run every 6 hours at minute 30 (offset from top movers job)
+    const cleanupJob = cron.schedule('30 */6 * * *', async () => {
         try {
             console.log('\n🧹 Running scheduled data cleanup...');
             const result = await performDataCleanup(client, dbName);
@@ -602,7 +652,7 @@ function setupDataCleanupCronJob(client, dbName) {
     // Start the job
     cleanupJob.start();
     
-    console.log('✅ Data cleanup cron job scheduled to run every hour at :30');
+    console.log('✅ Data cleanup cron job scheduled to run every 6 hours at :30');
 }
 
 module.exports = {

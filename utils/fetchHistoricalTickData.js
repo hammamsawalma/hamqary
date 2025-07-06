@@ -138,10 +138,12 @@ const rateLimiter = new BinanceRateLimiter();
  * Call this on startup if you know the IP is currently banned
  * @param {number} banUntilTimestamp - Ban expiry timestamp (optional)
  */
-function initializeCurrentBanStatus(banUntilTimestamp = 1751709892841) {
+function initializeCurrentBanStatus(banUntilTimestamp = null) {
     if (banUntilTimestamp && banUntilTimestamp > Date.now()) {
         rateLimiter.setBanned(banUntilTimestamp);
         console.log(`🚫 Initialized with current IP ban until ${new Date(banUntilTimestamp).toISOString()}`);
+    } else {
+        console.log('✅ Rate limiter initialized without any active bans');
     }
 }
 
@@ -161,7 +163,7 @@ function isCurrentlyBanned() {
     return rateLimiter.isBannedNow();
 }
 
-// Initialize with current ban if detected
+// Initialize rate limiter clean (no hardcoded bans)
 initializeCurrentBanStatus();
 
 /**
