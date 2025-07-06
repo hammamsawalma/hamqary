@@ -1,7 +1,5 @@
 const cron = require('node-cron');
-const fetchAndStoreCandleData = require('../utils/fetchAndStoreCandleData');
-const generateArtificialCandleData = require('../utils/generateArtificialCandleData');
-const loadHistoricalCandleData = require('../utils/loadHistoricalCandleData');
+const { initializeGlobalHybridManager, getGlobalHybridManager, cleanupGlobalHybridManager } = require('../utils/hybridCandleDataManager');
 const { performDataCleanup } = require('../controllers/systemController');
 const { getTopMoversSymbols, getTopMoversSummary } = require('../utils/getTopMoversSymbols');
 const { saveSelectedSymbols, getSelectedSymbols } = require('../models/database');
@@ -9,497 +7,126 @@ const { handleNewSymbolAddition } = require('../controllers/symbolController');
 
 // Job execution tracking
 const jobStatus = {
-    candleDataJob: { running: false, lastRun: null, lastDuration: 0 },
-    artificialCandleJobs: { running: false, lastRun: null, lastDuration: 0 },
-    topMoversJob: { running: false, lastRun: null, lastDuration: 0, lastUpdate: null }
+    hybridSystem: { 
+        running: false, 
+        initialized: false, 
+        lastInitialization: null, 
+        initializationDuration: 0,
+        stats: null
+    },
+    topMoversJob: { 
+        running: false, 
+        lastRun: null, 
+        lastDuration: 0, 
+        lastUpdate: null 
+    },
+    dataCleanupJob: { 
+        running: false, 
+        lastRun: null, 
+        lastDuration: 0 
+    }
 };
 
-// Job queue for artificial candle generation
-let artificialCandleQueue = [];
-let processingQueue = false;
-
 /**
- * Determines if a candle should be generated at the current time for the given interval
- * Uses simple minute-boundary alignment for reliability
- * @param {Date} currentTime - Current time
- * @param {number} intervalMinutes - Candle interval in minutes
- * @returns {boolean} True if a candle should be generated
- */
-function shouldGenerateCandle(currentTime, intervalMinutes) {
-    // Get current time components
-    const minutes = currentTime.getUTCMinutes();
-    const seconds = currentTime.getUTCSeconds();
-    
-    // Check if current minute is divisible by interval (candle boundary)
-    const isIntervalBoundary = (minutes % intervalMinutes) === 0;
-    
-    // Only generate at 10-15 seconds after the minute to ensure:
-    // 1. The previous interval has ended
-    // 2. 1-minute base data is available for aggregation
-    const isCorrectSecond = seconds >= 10 && seconds <= 15;
-    
-    const shouldGenerate = isIntervalBoundary && isCorrectSecond;
-    
-    if (shouldGenerate) {
-        console.log(`🕒 Artificial candle generation time for ${intervalMinutes}m: ${currentTime.toISOString()} (minute: ${minutes}, second: ${seconds})`);
-    }
-    
-    return shouldGenerate;
-}
-
-/**
- * Sets up a cron job to fetch and store candle data at regular intervals
+ * Initialize the Hybrid Candle Data System on application startup
+ * This replaces all the old cron-based data fetching with WebSocket real-time approach
  * @param {Object} client - MongoDB client
  * @param {string} dbName - Database name
  */
-function setupCandleDataCronJob(client, dbName) {
+async function initializeHybridCandleSystem(client, dbName) {
     if (!client) {
-        console.error('❌ Cannot setup cron job: MongoDB client is not available');
-        return;
+        console.error('❌ Cannot initialize hybrid system: MongoDB client is not available');
+        return false;
     }
 
-    console.log('⏰ Setting up candle data cron job...');
+    console.log('🚀 Initializing Hybrid Candle Data System...');
     
-    // Define all intervals 1-20 minutes (mix of real and artificial data)
-    const realDataIntervals = ['1m', '3m', '5m', '15m']; // Binance-supported intervals
-    const artificialDataIntervals = ['2m', '4m', '6m', '7m', '8m', '9m', '10m', '11m', '12m', '13m', '14m', '16m', '17m', '18m', '19m', '20m']; // Custom intervals
+    const startTime = new Date();
+    jobStatus.hybridSystem.running = true;
+    jobStatus.hybridSystem.lastInitialization = startTime;
     
-    // Schedule the job to run every minute with execution guard
-    const candleDataJob = cron.schedule('* * * * *', async () => {
-        // Check if previous job is still running
-        if (jobStatus.candleDataJob.running) {
-            console.log('⚠️ Candle data job is still running, skipping this execution');
-            return;
-        }
-
-        const startTime = new Date();
-        jobStatus.candleDataJob.running = true;
-        jobStatus.candleDataJob.lastRun = startTime;
-
-        console.log(`\n🕒 Running scheduled candle data job at ${startTime.toISOString()}`);
+    try {
+        // Get current selected symbols
+        const selectedSymbols = await getSelectedSymbols(client, dbName);
         
-        try {
-            // Calculate time-based window to fetch closed candles (more conservative)
-            const now = Date.now();
-            const options = {
-                // Fetch candles from 10 minutes ago to 2 minutes ago to ensure they're definitely closed
-                startTime: now - (10 * 60 * 1000), // 10 minutes ago
-                endTime: now - (2 * 60 * 1000)     // 2 minutes ago
-            };
-            
-            // Process all real data intervals
-            for (const interval of realDataIntervals) {
-                try {
-                    console.log(`📊 Fetching ${interval} candle data...`);
-                    await fetchAndStoreCandleData(client, dbName, interval, options);
-                    console.log(`✅ Successfully processed ${interval} data`);
-                } catch (intervalError) {
-                    console.error(`❌ Error processing ${interval} data:`, intervalError.message);
-                    // Continue with other intervals even if one fails
-                }
-            }
+        if (selectedSymbols.length === 0) {
+            console.log('⚠️ No symbols selected yet. Hybrid system will initialize when symbols are available.');
+            jobStatus.hybridSystem.running = false;
+            return true; // Not an error, just waiting for symbol selection
+        }
+        
+        console.log(`📊 Initializing hybrid system for ${selectedSymbols.length} symbols: ${selectedSymbols.slice(0, 5).join(', ')}${selectedSymbols.length > 5 ? '...' : ''}`);
+        
+        // Initialize the hybrid manager (historical API + real-time WebSocket)
+        const hybridManager = await initializeGlobalHybridManager(client, dbName, selectedSymbols);
+        
+        if (hybridManager) {
+            jobStatus.hybridSystem.initialized = true;
+            jobStatus.hybridSystem.stats = hybridManager.getStatus();
             
             const endTime = new Date();
-            jobStatus.candleDataJob.lastDuration = endTime - startTime;
-            console.log(`✅ Candle data job completed in ${jobStatus.candleDataJob.lastDuration}ms`);
+            jobStatus.hybridSystem.initializationDuration = endTime - startTime;
             
-        } catch (error) {
-            console.error('❌ Scheduled candle data job failed:', error);
-        } finally {
-            jobStatus.candleDataJob.running = false;
-        }
-    }, {
-        scheduled: false // Don't start immediately
-    });
-    
-    // Register the job with system state for proper cleanup
-    if (global.systemState) {
-        global.systemState.cronJobs.set('candleDataJob', candleDataJob);
-    }
-    
-    // Start the job
-    candleDataJob.start();
-    
-    console.log(`✅ Candle data cron job scheduled to run every minute for intervals: ${realDataIntervals.join(', ')}`);
-}
-
-/**
- * Sets up a single consolidated cron job for generating artificial candle data
- * @param {Object} client - MongoDB client
- * @param {string} dbName - Database name
- */
-function setupArtificialCandleDataCronJobs(client, dbName) {
-    if (!client) {
-        console.error('❌ Cannot setup artificial candle data cron jobs: MongoDB client is not available');
-        return;
-    }
-
-    console.log('⏰ Setting up consolidated artificial candle data cron job...');
-    
-    // Define the intervals for which we want to generate artificial candles (2-60 minutes)
-    const intervals = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
-                      21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
-                      41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60];
-    
-    // Single cron job that checks all intervals and queues them for processing
-    const artificialCandleJob = cron.schedule('* * * * *', async () => {
-        // Check if artificial candle jobs are already running
-        if (jobStatus.artificialCandleJobs.running) {
-            console.log('⚠️ Artificial candle jobs are still running, skipping this execution');
-            return;
-        }
-
-        const now = new Date();
-        const intervalsToProcess = [];
-        
-        // Check which intervals need processing
-        for (const interval of intervals) {
-            if (shouldGenerateCandle(now, interval)) {
-                intervalsToProcess.push(interval);
-            }
-        }
-        
-        // If no intervals need processing, return early
-        if (intervalsToProcess.length === 0) {
-            return;
-        }
-        
-        // Add intervals to queue
-        artificialCandleQueue.push(...intervalsToProcess);
-        
-        // Process the queue if not already processing
-        if (!processingQueue) {
-            processArtificialCandleQueue(client, dbName);
-        }
-    }, {
-        scheduled: false // Don't start immediately
-    });
-    
-    // Register the job with system state for proper cleanup
-    if (global.systemState) {
-        global.systemState.cronJobs.set('artificialCandleJob', artificialCandleJob);
-    }
-    
-    // Start the job
-    artificialCandleJob.start();
-    
-    console.log(`✅ Consolidated artificial candle data cron job scheduled for intervals: ${intervals.join(', ')}`);
-}
-
-/**
- * Processes the artificial candle generation queue
- * @param {Object} client - MongoDB client
- * @param {string} dbName - Database name
- */
-async function processArtificialCandleQueue(client, dbName) {
-    if (processingQueue || artificialCandleQueue.length === 0) {
-        return;
-    }
-    
-    processingQueue = true;
-    jobStatus.artificialCandleJobs.running = true;
-    const startTime = new Date();
-    jobStatus.artificialCandleJobs.lastRun = startTime;
-    
-    console.log(`\n🔄 Processing artificial candle queue with ${artificialCandleQueue.length} intervals...`);
-    
-    try {
-        // Process intervals in optimized batches for 60 intervals
-        const batchSize = 5; // Increased batch size for better efficiency
-        let processedCount = 0;
-        const totalIntervals = artificialCandleQueue.length;
-        
-        while (artificialCandleQueue.length > 0) {
-            const batch = artificialCandleQueue.splice(0, batchSize);
-            console.log(`📊 Processing batch ${Math.ceil(processedCount/batchSize) + 1}: ${batch.join('m, ')}m intervals (${processedCount + batch.length}/${totalIntervals})`);
+            console.log('✅ Hybrid Candle Data System initialized successfully');
+            console.log(`🎯 System Features:`);
+            console.log(`   📡 Real-time WebSocket: 1-minute candles with 'x' closed flag detection`);
+            console.log(`   📊 Historical API: Backfills last 180 minutes of data`);
+            console.log(`   🔧 Artificial Candles: Auto-generated 2m-60m intervals from 1m base data`);
+            console.log(`   ⚡ Event-Driven: Instant processing when candles close (no polling)`);
+            console.log(`   🚫 Zero Rate Limits: WebSocket data doesn't count toward API limits`);
+            console.log(`⏱️  Initialization completed in ${jobStatus.hybridSystem.initializationDuration}ms`);
             
-            // Process batch sequentially to control resource usage
-            for (const interval of batch) {
-                try {
-                    const intervalStart = performance.now();
-                    console.log(`🕒 Generating ${interval}m artificial candles at ${new Date().toISOString()}`);
-                    
-                    const result = await generateArtificialCandleData(client, dbName, interval);
-                    const intervalDuration = Math.round(performance.now() - intervalStart);
-                    
-                    console.log(`✅ Successfully generated ${interval}m candles in ${intervalDuration}ms (${result.candlesGenerated} candles, ${result.reversalPatternsDetected} reversals)`);
-                    processedCount++;
-                    
-                } catch (error) {
-                    console.error(`❌ Failed to generate ${interval}m candles:`, error.message);
-                    processedCount++;
-                    
-                    // If we get rate limited, add longer delay
-                    if (error.message.includes('rate limit') || error.message.includes('banned')) {
-                        console.log(`⏳ Rate limit detected, adding extended delay...`);
-                        await new Promise(resolve => setTimeout(resolve, 5000)); // 5 second delay
-                    }
-                }
-            }
-            
-            // Progressive delay based on batch number to prevent API overload
-            if (artificialCandleQueue.length > 0) {
-                const batchNumber = Math.ceil(processedCount / batchSize);
-                const delay = Math.min(1000 + (batchNumber * 500), 5000); // Increase delay with each batch, max 5s
-                console.log(`⏳ Batch completed, waiting ${delay}ms before next batch...`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-            }
-        }
-        
-        const endTime = new Date();
-        jobStatus.artificialCandleJobs.lastDuration = endTime - startTime;
-        console.log(`✅ Artificial candle queue processing completed in ${jobStatus.artificialCandleJobs.lastDuration}ms`);
-        
-    } catch (error) {
-        console.error('❌ Error processing artificial candle queue:', error);
-    } finally {
-        processingQueue = false;
-        jobStatus.artificialCandleJobs.running = false;
-    }
-}
-
-/**
- * Runs the candle data fetch job immediately on application startup
- * @param {Object} client - MongoDB client
- * @param {string} dbName - Database name
- */
-async function runInitialCandleDataFetch(client, dbName) {
-    if (!client) {
-        console.error('❌ Cannot run initial fetch: MongoDB client is not available');
-        return;
-    }
-
-    console.log('🚀 Running initial candle data fetch on startup...');
-    
-    // Use same intervals as the cron job for consistency
-    const realDataIntervals = ['1m', '3m', '5m', '15m']; // Only Binance-supported intervals
-    
-    try {
-        // Use time-based window for initial fetch as well
-        const now = Date.now();
-        const options = {
-            // Fetch candles from 10 minutes ago to 1 minute ago for initial load
-            startTime: now - (10 * 60 * 1000), // 10 minutes ago
-            endTime: now - (1 * 60 * 1000)     // 1 minute ago
-        };
-        
-        // Process all intervals
-        for (const interval of realDataIntervals) {
-            try {
-                console.log(`📊 Initial fetch for ${interval} interval...`);
-                await fetchAndStoreCandleData(client, dbName, interval, options);
-                console.log(`✅ Successfully fetched ${interval} data`);
-            } catch (intervalError) {
-                console.error(`❌ Error fetching ${interval} data:`, intervalError.message);
-                // Continue with other intervals even if one fails
-            }
-        }
-        
-        console.log('✅ Initial candle data fetch completed for all intervals');
-    } catch (error) {
-        console.error('❌ Initial candle data fetch failed:', error);
-    }
-}
-
-/**
- * Runs the initial artificial candle data generation on application startup
- * @param {Object} client - MongoDB client
- * @param {string} dbName - Database name
- */
-async function runInitialArtificialCandleDataGeneration(client, dbName) {
-    if (!client) {
-        console.error('❌ Cannot run initial artificial candle generation: MongoDB client is not available');
-        return;
-    }
-
-    console.log('🚀 Running initial artificial candle data generation on startup...');
-    
-    // Define the intervals for which we want to generate artificial candles (2-60 minutes)
-    const intervals = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
-                      21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
-                      41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60];
-    
-    for (const interval of intervals) {
-        try {
-            console.log(`📊 Generating initial ${interval}m artificial candles...`);
-            await generateArtificialCandleData(client, dbName, interval);
-        } catch (error) {
-            console.error(`❌ Initial ${interval}m artificial candle generation failed:`, error);
-        }
-    }
-    
-    console.log('✅ Initial artificial candle data generation completed');
-}
-
-/**
- * Runs the initial top movers selection on application startup
- * @param {Object} client - MongoDB client
- * @param {string} dbName - Database name
- */
-async function runInitialTopMoversSelection(client, dbName) {
-    if (!client) {
-        console.error('❌ Cannot run initial top movers selection: MongoDB client is not available');
-        return;
-    }
-
-    console.log('🔥 Running initial top movers selection on startup...');
-    
-    try {
-        // Fetch top movers (top 20 gainers + top 20 losers)
-        const topMoversData = await getTopMoversSymbols(20);
-        
-        if (!topMoversData.success) {
-            console.error('❌ Failed to fetch initial top movers:', topMoversData.error);
-            console.log('💡 System will continue with any existing symbols or wait for hourly update');
-            return;
-        }
-        
-        // Get current selected symbols (if any)
-        const currentSymbols = await getSelectedSymbols(client, dbName);
-        
-        // Log the fetched top movers
-        console.log(getTopMoversSummary(topMoversData));
-        
-        console.log(`📊 Initial Top Movers Analysis:`);
-        console.log(`   🎯 New symbols to select: ${topMoversData.symbols.length}`);
-        console.log(`   📈 Top gainers: ${topMoversData.gainers.symbols.slice(0, 3).join(', ')}...`);
-        console.log(`   📉 Top losers: ${topMoversData.losers.symbols.slice(0, 3).join(', ')}...`);
-        
-        // Save the new symbols (no change threshold for initial selection)
-        await saveSelectedSymbols(client, dbName, topMoversData.symbols);
-        console.log('✅ Initial symbol selection saved to database');
-        
-        // Determine which symbols are new for historical data loading
-        const newSymbols = topMoversData.symbols.filter(symbol => !currentSymbols.includes(symbol));
-        
-        if (newSymbols.length > 0) {
-            console.log(`🆕 Loading historical data for ${newSymbols.length} symbols...`);
-            console.log(`   Symbols: ${newSymbols.slice(0, 5).join(', ')}${newSymbols.length > 5 ? '...' : ''}`);
-            
-            // Load historical data for new symbols asynchronously (don't block startup)
-            handleNewSymbolAddition(client, dbName, newSymbols)
-                .then(() => {
-                    console.log('✅ Historical data loading completed for initial top movers');
-                })
-                .catch(error => {
-                    console.error('❌ Error loading historical data for initial symbols:', error);
-                });
+            return true;
         } else {
-            console.log('ℹ️ All symbols already have historical data');
+            throw new Error('Failed to initialize hybrid manager');
         }
-        
-        console.log(`✅ Initial top movers selection completed successfully`);
-        console.log(`🎯 Selected ${topMoversData.symbols.length} most volatile symbols for optimal trading`);
-        console.log(`⏰ Next automatic update will occur at the next hour boundary`);
         
     } catch (error) {
-        console.error('❌ Initial top movers selection failed:', error);
-        console.log('💡 System will continue and try again during the next hourly update');
+        console.error('❌ Failed to initialize Hybrid Candle Data System:', error);
+        jobStatus.hybridSystem.initialized = false;
+        return false;
+    } finally {
+        jobStatus.hybridSystem.running = false;
     }
 }
 
 /**
- * Handle first-time symbol selection and load historical data
+ * Update symbols in the hybrid system
  * @param {Object} client - MongoDB client
  * @param {string} dbName - Database name
- * @param {Array} selectedSymbols - Array of selected symbols
+ * @param {Array} newSymbols - Array of new symbols
  */
-async function handleFirstTimeSymbolSelection(client, dbName, selectedSymbols, isFirstSelection) {
-    // If this is the first time symbols are selected, load historical data
-    if (isFirstSelection && selectedSymbols.length > 0) {
-        console.log('🔄 First time symbols selection detected. Loading historical data...');
+async function updateHybridSystemSymbols(client, dbName, newSymbols) {
+    try {
+        const hybridManager = getGlobalHybridManager(client, dbName);
         
-        // Load the historical candle data and generate artificial candles asynchronously
-        try {
-            const results = await loadHistoricalCandleData(client, dbName, selectedSymbols);
-            console.log(`✅ Historical data job completed. Stored ${results.candlesStored} candles and generated ${results.artificialCandlesGenerated} artificial candles.`);
-        } catch (error) {
-            console.error('❌ Error in historical data loading:', error);
+        if (hybridManager) {
+            console.log(`🔄 Updating hybrid system with ${newSymbols.length} symbols...`);
+            const success = await hybridManager.updateSymbols(newSymbols);
+            
+            if (success) {
+                jobStatus.hybridSystem.stats = hybridManager.getStatus();
+                console.log('✅ Hybrid system symbols updated successfully');
+                return true;
+            } else {
+                console.error('❌ Failed to update hybrid system symbols');
+                return false;
+            }
+        } else {
+            // Initialize if not already initialized
+            console.log('🚀 Hybrid system not initialized, initializing now...');
+            return await initializeHybridCandleSystem(client, dbName);
         }
+        
+    } catch (error) {
+        console.error('❌ Error updating hybrid system symbols:', error);
+        return false;
     }
-}
-
-/**
- * Gets the current status of all cron jobs
- * @returns {Object} Job status information
- */
-function getCronJobStatus() {
-    return {
-        candleDataJob: {
-            ...jobStatus.candleDataJob,
-            queueLength: 0 // Always 0 for candle data job since it doesn't use a queue
-        },
-        artificialCandleJobs: {
-            ...jobStatus.artificialCandleJobs,
-            queueLength: artificialCandleQueue.length,
-            processingQueue
-        },
-        systemHealth: {
-            totalActiveJobs: (jobStatus.candleDataJob.running ? 1 : 0) + (jobStatus.artificialCandleJobs.running ? 1 : 0),
-            lastHealthCheck: new Date()
-        }
-    };
-}
-
-/**
- * Logs the current cron job status for monitoring
- */
-function logCronJobStatus() {
-    const status = getCronJobStatus();
-    const { getRateLimiterStatus } = require('../utils/fetchHistoricalTickData');
-    const rateLimitStatus = getRateLimiterStatus();
-    
-    console.log('\n📊 System Health Report:');
-    console.log(`├── Candle Data Job: ${status.candleDataJob.running ? '🟢 Running' : '🔴 Idle'}`);
-    console.log(`├── Last Run: ${status.candleDataJob.lastRun ? status.candleDataJob.lastRun.toISOString() : 'Never'}`);
-    console.log(`├── Last Duration: ${status.candleDataJob.lastDuration}ms`);
-    console.log(`├── Artificial Candle Jobs: ${status.artificialCandleJobs.running ? '🟢 Running' : '🔴 Idle'}`);
-    console.log(`├── Queue Length: ${status.artificialCandleJobs.queueLength} intervals`);
-    console.log(`├── Processing Queue: ${status.artificialCandleJobs.processingQueue ? '🟢 Yes' : '🔴 No'}`);
-    console.log(`├── API Rate Limit: ${rateLimitStatus.requestCount}/${rateLimitStatus.hourlyLimit} requests used`);
-    console.log(`├── API Ban Status: ${rateLimitStatus.isBanned ? '🚫 BANNED' : '✅ Active'}`);
-    console.log(`├── Top Movers Job: ${status.topMoversJob ? (jobStatus.topMoversJob.running ? '🟢 Running' : '🔴 Idle') : 'Not initialized'}`);
-    console.log(`└── Total Active Jobs: ${status.systemHealth.totalActiveJobs}`);
-    
-    // Warning for potential issues
-    if (rateLimitStatus.isBanned) {
-        const waitMinutes = Math.round((rateLimitStatus.banExpiry - Date.now()) / 1000 / 60);
-        console.log(`⚠️  WARNING: API is banned for ${waitMinutes} more minutes`);
-    }
-    
-    if (rateLimitStatus.requestCount > rateLimitStatus.hourlyLimit * 0.8) {
-        console.log(`⚠️  WARNING: API rate limit at ${Math.round((rateLimitStatus.requestCount / rateLimitStatus.hourlyLimit) * 100)}%`);
-    }
-    
-    if (status.artificialCandleJobs.queueLength > 10) {
-        console.log(`⚠️  WARNING: Large queue backlog (${status.artificialCandleJobs.queueLength} intervals)`);
-    }
-}
-
-/**
- * Sets up a monitoring cron job to log system status periodically
- */
-function setupMonitoringCronJob() {
-    // Log status every 5 minutes
-    const monitoringJob = cron.schedule('*/5 * * * *', () => {
-        logCronJobStatus();
-    }, {
-        scheduled: false // Don't start immediately
-    });
-    
-    // Register the job with system state for proper cleanup
-    if (global.systemState) {
-        global.systemState.cronJobs.set('monitoringJob', monitoringJob);
-    }
-    
-    // Start the job
-    monitoringJob.start();
-    
-    console.log('✅ Monitoring cron job scheduled to run every 5 minutes');
 }
 
 /**
  * Sets up a cron job to automatically update symbols with top movers (gainers/losers)
+ * This is the only remaining cron job - everything else is now event-driven via WebSocket
  * @param {Object} client - MongoDB client
  * @param {string} dbName - Database name
  */
@@ -562,25 +189,26 @@ function setupTopMoversCronJob(client, dbName) {
                 // Save new symbols
                 await saveSelectedSymbols(client, dbName, newSymbols);
                 
-                // Handle new symbol addition (backfill historical data)
-                if (addedSymbols.length > 0) {
-                    console.log(`🆕 Loading historical data for ${addedSymbols.length} new symbols...`);
-                    console.log(`   New symbols: ${addedSymbols.slice(0, 5).join(', ')}${addedSymbols.length > 5 ? '...' : ''}`);
+                // Update the hybrid system with new symbols
+                const updateSuccess = await updateHybridSystemSymbols(client, dbName, newSymbols);
+                
+                if (updateSuccess) {
+                    console.log('✅ Hybrid system updated with new symbols');
                     
-                    // Load historical data for new symbols asynchronously
-                    handleNewSymbolAddition(client, dbName, addedSymbols)
-                        .catch(error => {
-                            console.error('❌ Error loading historical data for new symbols:', error);
-                        });
+                    if (addedSymbols.length > 0) {
+                        console.log(`🆕 Added symbols: ${addedSymbols.slice(0, 5).join(', ')}${addedSymbols.length > 5 ? '...' : ''}`);
+                    }
+                    
+                    if (removedSymbols.length > 0) {
+                        console.log(`🗑️ Removed symbols: ${removedSymbols.slice(0, 5).join(', ')}${removedSymbols.length > 5 ? '...' : ''}`);
+                        console.log('   💡 Note: Historical data preserved, real-time processing stopped');
+                    }
+                    
+                    jobStatus.topMoversJob.lastUpdate = startTime;
+                    
+                } else {
+                    console.error('❌ Failed to update hybrid system, keeping previous symbol selection');
                 }
-                
-                if (removedSymbols.length > 0) {
-                    console.log(`🗑️ Removed symbols: ${removedSymbols.slice(0, 5).join(', ')}${removedSymbols.length > 5 ? '...' : ''}`);
-                    console.log('   💡 Note: Historical data preserved, signals will stop being generated');
-                }
-                
-                jobStatus.topMoversJob.lastUpdate = startTime;
-                console.log('✅ Symbols updated successfully with top movers');
                 
             } else {
                 console.log(`ℹ️ Minor changes detected (${totalChanges} changes), keeping current symbols`);
@@ -610,7 +238,72 @@ function setupTopMoversCronJob(client, dbName) {
     
     console.log('✅ Top movers cron job scheduled to run every hour');
     console.log('   🎯 Will select top 20 gainers + top 20 losers');
-    console.log('   🔄 Updates only when 5+ symbols change significantly');
+    console.log('   🔄 Updates hybrid system when 5+ symbols change significantly');
+}
+
+/**
+ * Run initial top movers selection and initialize hybrid system
+ * @param {Object} client - MongoDB client
+ * @param {string} dbName - Database name
+ */
+async function runInitialTopMoversAndHybridInitialization(client, dbName) {
+    if (!client) {
+        console.error('❌ Cannot run initial setup: MongoDB client is not available');
+        return;
+    }
+
+    console.log('🔥 Running initial top movers selection and hybrid system initialization...');
+    
+    try {
+        // Fetch top movers (top 20 gainers + top 20 losers)
+        const topMoversData = await getTopMoversSymbols(20);
+        
+        if (!topMoversData.success) {
+            console.error('❌ Failed to fetch initial top movers:', topMoversData.error);
+            console.log('💡 System will try again during the next hourly update');
+            
+            // Try to initialize with existing symbols if any
+            const existingSymbols = await getSelectedSymbols(client, dbName);
+            if (existingSymbols.length > 0) {
+                console.log(`🔄 Found ${existingSymbols.length} existing symbols, initializing hybrid system...`);
+                await initializeHybridCandleSystem(client, dbName);
+            }
+            return;
+        }
+        
+        // Get current selected symbols (if any)
+        const currentSymbols = await getSelectedSymbols(client, dbName);
+        
+        // Log the fetched top movers
+        console.log(getTopMoversSummary(topMoversData));
+        
+        console.log(`📊 Initial Top Movers Analysis:`);
+        console.log(`   🎯 New symbols to select: ${topMoversData.symbols.length}`);
+        console.log(`   📈 Top gainers: ${topMoversData.gainers.symbols.slice(0, 3).join(', ')}...`);
+        console.log(`   📉 Top losers: ${topMoversData.losers.symbols.slice(0, 3).join(', ')}...`);
+        
+        // Save the new symbols (no change threshold for initial selection)
+        await saveSelectedSymbols(client, dbName, topMoversData.symbols);
+        console.log('✅ Initial symbol selection saved to database');
+        
+        // Initialize the hybrid system with selected symbols
+        console.log('🚀 Initializing hybrid candle data system with selected symbols...');
+        const hybridSuccess = await initializeHybridCandleSystem(client, dbName);
+        
+        if (hybridSuccess) {
+            console.log(`✅ Initial setup completed successfully`);
+            console.log(`🎯 Selected ${topMoversData.symbols.length} most volatile symbols for optimal trading`);
+            console.log(`📡 Real-time WebSocket monitoring active for all selected symbols`);
+            console.log(`⏰ Next automatic update will occur at the next hour boundary`);
+        } else {
+            console.error('❌ Failed to initialize hybrid system, but symbols are saved');
+            console.log('   💡 Will retry initialization during next top movers update');
+        }
+        
+    } catch (error) {
+        console.error('❌ Initial setup failed:', error);
+        console.log('💡 System will continue and try again during the next hourly update');
+    }
 }
 
 /**
@@ -628,17 +321,32 @@ function setupDataCleanupCronJob(client, dbName) {
     
     // Schedule cleanup to run every 6 hours at minute 30 (offset from top movers job)
     const cleanupJob = cron.schedule('30 */6 * * *', async () => {
+        // Check if previous job is still running
+        if (jobStatus.dataCleanupJob.running) {
+            console.log('⚠️ Data cleanup job is still running, skipping this execution');
+            return;
+        }
+
+        const startTime = new Date();
+        jobStatus.dataCleanupJob.running = true;
+        jobStatus.dataCleanupJob.lastRun = startTime;
+        
         try {
             console.log('\n🧹 Running scheduled data cleanup...');
             const result = await performDataCleanup(client, dbName);
             
+            const endTime = new Date();
+            jobStatus.dataCleanupJob.lastDuration = endTime - startTime;
+            
             if (result.deletedCount > 0) {
-                console.log(`✅ Data cleanup completed. Removed ${result.deletedCount} old OHLC records.`);
+                console.log(`✅ Data cleanup completed in ${jobStatus.dataCleanupJob.lastDuration}ms. Removed ${result.deletedCount} old OHLC records.`);
             } else {
-                console.log('ℹ️ Data cleanup completed. No old records found to remove.');
+                console.log(`ℹ️ Data cleanup completed in ${jobStatus.dataCleanupJob.lastDuration}ms. No old records found to remove.`);
             }
         } catch (error) {
             console.error('❌ Scheduled data cleanup failed:', error);
+        } finally {
+            jobStatus.dataCleanupJob.running = false;
         }
     }, {
         scheduled: false // Don't start immediately
@@ -655,16 +363,128 @@ function setupDataCleanupCronJob(client, dbName) {
     console.log('✅ Data cleanup cron job scheduled to run every 6 hours at :30');
 }
 
+/**
+ * Gets the current status of the hybrid system and all cron jobs
+ * @returns {Object} Comprehensive system status
+ */
+function getSystemStatus() {
+    const hybridManager = getGlobalHybridManager();
+    const hybridStatus = hybridManager ? hybridManager.getStatus() : null;
+    
+    return {
+        hybridSystem: {
+            ...jobStatus.hybridSystem,
+            currentStatus: hybridStatus
+        },
+        topMoversJob: jobStatus.topMoversJob,
+        dataCleanupJob: jobStatus.dataCleanupJob,
+        systemHealth: {
+            hybridSystemActive: jobStatus.hybridSystem.initialized,
+            webSocketConnected: hybridStatus ? hybridStatus.isActive : false,
+            totalActiveJobs: (jobStatus.topMoversJob.running ? 1 : 0) + (jobStatus.dataCleanupJob.running ? 1 : 0),
+            lastHealthCheck: new Date()
+        }
+    };
+}
+
+/**
+ * Logs the current system status for monitoring
+ */
+function logSystemStatus() {
+    const status = getSystemStatus();
+    
+    console.log('\n📊 Hybrid System Health Report:');
+    console.log(`├── Hybrid System: ${status.hybridSystem.initialized ? '🟢 Initialized' : '🔴 Not Initialized'}`);
+    
+    if (status.hybridSystem.currentStatus) {
+        const current = status.hybridSystem.currentStatus;
+        console.log(`├── WebSocket Status: ${current.isActive ? '🟢 Connected' : '🔴 Disconnected'}`);
+        console.log(`├── Subscribed Symbols: ${current.webSocketStatus ? current.webSocketStatus.subscribedCount : 0}`);
+        console.log(`├── Historical Candles: ${current.stats.historicalCandlesLoaded}`);
+        console.log(`├── Real-time Candles: ${current.stats.realtimeCandlesProcessed}`);
+        console.log(`├── Artificial Candles: ${current.stats.artificialCandlesGenerated}`);
+        console.log(`├── Reversal Patterns: ${current.stats.reversalPatternsDetected}`);
+        console.log(`├── System Uptime: ${Math.round(current.stats.uptime / 1000 / 60)} minutes`);
+    }
+    
+    console.log(`├── Top Movers Job: ${status.topMoversJob.running ? '🟢 Running' : '🔴 Idle'}`);
+    console.log(`├── Last Top Movers Run: ${status.topMoversJob.lastRun ? status.topMoversJob.lastRun.toISOString() : 'Never'}`);
+    console.log(`├── Last Symbol Update: ${status.topMoversJob.lastUpdate ? status.topMoversJob.lastUpdate.toISOString() : 'Never'}`);
+    console.log(`├── Data Cleanup Job: ${status.dataCleanupJob.running ? '🟢 Running' : '🔴 Idle'}`);
+    console.log(`├── Last Cleanup: ${status.dataCleanupJob.lastRun ? status.dataCleanupJob.lastRun.toISOString() : 'Never'}`);
+    console.log(`└── Total Active Jobs: ${status.systemHealth.totalActiveJobs}`);
+    
+    // Warnings for potential issues
+    if (!status.hybridSystem.initialized) {
+        console.log(`⚠️  WARNING: Hybrid system not initialized - no real-time data processing`);
+    }
+    
+    if (status.hybridSystem.initialized && !status.systemHealth.webSocketConnected) {
+        console.log(`⚠️  WARNING: WebSocket disconnected - only historical data available`);
+    }
+}
+
+/**
+ * Sets up a monitoring cron job to log system status periodically
+ */
+function setupMonitoringCronJob() {
+    // Log status every 10 minutes (less frequent since we have fewer jobs now)
+    const monitoringJob = cron.schedule('*/10 * * * *', () => {
+        logSystemStatus();
+    }, {
+        scheduled: false // Don't start immediately
+    });
+    
+    // Register the job with system state for proper cleanup
+    if (global.systemState) {
+        global.systemState.cronJobs.set('monitoringJob', monitoringJob);
+    }
+    
+    // Start the job
+    monitoringJob.start();
+    
+    console.log('✅ Monitoring cron job scheduled to run every 10 minutes');
+}
+
+/**
+ * Cleanup all hybrid system resources
+ */
+async function cleanupHybridSystem() {
+    console.log('🧹 Cleaning up Hybrid Candle Data System...');
+    
+    try {
+        await cleanupGlobalHybridManager();
+        jobStatus.hybridSystem.initialized = false;
+        jobStatus.hybridSystem.stats = null;
+        console.log('✅ Hybrid system cleanup completed');
+    } catch (error) {
+        console.error('❌ Error during hybrid system cleanup:', error);
+    }
+}
+
 module.exports = {
-    setupCandleDataCronJob,
-    setupArtificialCandleDataCronJobs,
-    runInitialCandleDataFetch,
-    runInitialArtificialCandleDataGeneration,
-    runInitialTopMoversSelection,
-    handleFirstTimeSymbolSelection,
-    getCronJobStatus,
-    logCronJobStatus,
-    setupMonitoringCronJob,
+    // Main initialization functions
+    initializeHybridCandleSystem,
+    runInitialTopMoversAndHybridInitialization,
+    updateHybridSystemSymbols,
+    
+    // Cron job setup functions
     setupTopMoversCronJob,
-    setupDataCleanupCronJob
+    setupDataCleanupCronJob,
+    setupMonitoringCronJob,
+    
+    // Status and monitoring functions
+    getSystemStatus,
+    logSystemStatus,
+    
+    // Cleanup functions
+    cleanupHybridSystem,
+    
+    // Legacy function names for compatibility (these now do nothing or redirect)
+    setupCandleDataCronJob: () => console.log('ℹ️ Legacy candle data cron job replaced by hybrid WebSocket system'),
+    setupArtificialCandleDataCronJobs: () => console.log('ℹ️ Legacy artificial candle cron jobs replaced by hybrid real-time generation'),
+    runInitialCandleDataFetch: () => console.log('ℹ️ Legacy initial fetch replaced by hybrid system initialization'),
+    runInitialArtificialCandleDataGeneration: () => console.log('ℹ️ Legacy artificial candle generation integrated into hybrid system'),
+    getCronJobStatus: getSystemStatus, // Redirect to new function
+    logCronJobStatus: logSystemStatus  // Redirect to new function
 };

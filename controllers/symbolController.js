@@ -1,5 +1,5 @@
 const { getSelectedSymbols } = require('../config/database');
-const { handleFirstTimeSymbolSelection } = require('../config/cron');
+const { updateHybridSystemSymbols, initializeHybridCandleSystem } = require('../config/cron');
 const { saveSelectedSymbols } = require('../models/database');
 const getBinanceUSDTSymbols = require('../utils/getBinanceUSDTSymbols');
 const loadHistoricalCandleData = require('../utils/loadHistoricalCandleData');
@@ -131,26 +131,35 @@ async function symbolsSelectController(req, res) {
         
         // Handle different scenarios
         if (systemWasReset || isFirstSelection) {
-            // Complete fresh startup - load all symbols
-            console.log('🚀 Starting fresh system with all symbols...');
+            // Complete fresh startup - initialize hybrid system with all symbols
+            console.log('🚀 Starting fresh hybrid system with all symbols...');
             console.log(`   └── All Symbols: ${selectedSymbols.join(', ')}`);
-            console.log('   └── Loading complete historical data and starting all processes...');
+            console.log('   └── Initializing hybrid WebSocket + API system...');
             
-            handleFirstTimeSymbolSelection(client, dbName, selectedSymbols, true)
+            initializeHybridCandleSystem(client, dbName)
+                .then(() => {
+                    console.log('✅ Hybrid system initialized successfully from manual selection');
+                })
                 .catch(error => {
-                    console.error('❌ Error in fresh system startup:', error);
+                    console.error('❌ Error in hybrid system initialization:', error);
                 });
                 
-        } else if (addedSymbols.length > 0) {
-            // Smart addition - backfill only new symbols
-            console.log('🆕 Smart symbol addition detected...');
-            console.log(`   └── New Symbols: ${addedSymbols.join(', ')}`);
-            console.log('   └── Loading historical data for new symbols only...');
+        } else if (addedSymbols.length > 0 || removedSymbols.length > 0) {
+            // Update existing hybrid system with symbol changes
+            console.log('🆕 Updating hybrid system with symbol changes...');
+            console.log(`   └── New Symbols: ${addedSymbols.join(', ') || 'none'}`);
+            console.log(`   └── Removed Symbols: ${removedSymbols.join(', ') || 'none'}`);
             
-            // Load historical data only for newly added symbols
-            handleNewSymbolAddition(client, dbName, addedSymbols)
+            updateHybridSystemSymbols(client, dbName, selectedSymbols)
+                .then((success) => {
+                    if (success) {
+                        console.log('✅ Hybrid system updated successfully with new symbols');
+                    } else {
+                        console.error('❌ Failed to update hybrid system with new symbols');
+                    }
+                })
                 .catch(error => {
-                    console.error('❌ Error in new symbol addition:', error);
+                    console.error('❌ Error updating hybrid system:', error);
                 });
         }
         

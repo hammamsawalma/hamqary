@@ -1,6 +1,7 @@
 /**
- * Utility function to fetch candle data for selected symbols and store in database
- * This function is designed to be run by a cron job at regular intervals
+ * Utility function to fetch 1-minute candle data for selected symbols and store in database
+ * This function is designed to be run by a cron job every minute - ONLY handles 1-minute data
+ * All other timeframes are generated artificially from this 1-minute base data
  */
 
 const getPerpetualCandleData = require('./getPerpetualCandleData');
@@ -12,15 +13,14 @@ const { getGlobalTickCollector } = require('./websocketTickCollector');
 const { validateTradeSignal } = require('./tradeSignalValidator');
 
 /**
- * Fetches candle data for selected symbols and stores it in the database
+ * Fetches 1-minute candle data for selected symbols and stores it in the database
  * @param {Object} client - MongoDB client
  * @param {string} dbName - Database name
- * @param {string} interval - Candle interval (1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M)
  * @param {Object} [options] - Optional parameters for candle data fetching
  * @returns {Promise<Object>} Results summary
  */
-async function fetchAndStoreCandleData(client, dbName, interval = '1m', options = {}) {
-  console.log('🔄 Starting candle data fetch and store job...');
+async function fetchAndStoreCandleData(client, dbName, options = {}) {
+  console.log('🔄 Starting 1-minute candle data fetch and store job...');
   const results = {
     symbolsProcessed: 0,
     candlesStored: 0,
@@ -51,12 +51,12 @@ async function fetchAndStoreCandleData(client, dbName, interval = '1m', options 
     console.log(`📊 Found ${selectedSymbols.length} selected symbols: ${selectedSymbols.join(', ')}`);
     results.symbolsProcessed = selectedSymbols.length;
 
-    // Step 2: Fetch candle data for selected symbols
-    console.log(`🔍 Fetching candle data with interval ${interval}...`);
-    const candleData = await getPerpetualCandleData(selectedSymbols, interval, options);
+    // Step 2: Fetch ONLY 1-minute candle data for selected symbols
+    console.log(`🔍 Fetching 1-minute candle data...`);
+    const candleData = await getPerpetualCandleData(selectedSymbols, '1m', options);
 
-    // Step 3: Store the data in the candleData collection
-    console.log('💾 Storing candle data in database...');
+    // Step 3: Store the 1-minute data in the candleData collection
+    console.log('💾 Storing 1-minute candle data in database...');
     const candleCollection = db.collection('candleData');
 
     // Process each symbol's data
@@ -64,13 +64,13 @@ async function fetchAndStoreCandleData(client, dbName, interval = '1m', options 
       try {
         // Check if we have valid data for this symbol
         if (!candleData[symbol] || !Array.isArray(candleData[symbol])) {
-          console.error(`❌ No valid data received for ${symbol}`);
-          results.errors.push(`Failed to get data for ${symbol}`);
+          console.error(`❌ No valid 1-minute data received for ${symbol}`);
+          results.errors.push(`Failed to get 1-minute data for ${symbol}`);
           continue;
         }
 
         const symbolCandles = candleData[symbol];
-        console.log(`📈 Processing ${symbolCandles.length} candles for ${symbol}`);
+        console.log(`📈 Processing ${symbolCandles.length} 1-minute candles for ${symbol}`);
 
         // Validate candle close times - reject any future-dated candles
         const currentTime = Date.now();
@@ -79,27 +79,27 @@ async function fetchAndStoreCandleData(client, dbName, interval = '1m', options 
           const isClosed = candleCloseTime < currentTime;
           
           if (!isClosed) {
-            console.log(`⚠️ Rejecting future candle for ${symbol}: close time ${new Date(candleCloseTime).toISOString()} >= current ${new Date(currentTime).toISOString()}`);
+            console.log(`⚠️ Rejecting future 1-minute candle for ${symbol}: close time ${new Date(candleCloseTime).toISOString()} >= current ${new Date(currentTime).toISOString()}`);
           }
           
           return isClosed;
         });
 
         if (validCandles.length !== symbolCandles.length) {
-          console.log(`⚠️ Filtered out ${symbolCandles.length - validCandles.length} future-dated candles for ${symbol}`);
+          console.log(`⚠️ Filtered out ${symbolCandles.length - validCandles.length} future-dated 1-minute candles for ${symbol}`);
         }
 
         if (validCandles.length === 0) {
-          console.log(`⚠️ No valid closed candles found for ${symbol}, skipping signal processing`);
+          console.log(`⚠️ No valid closed 1-minute candles found for ${symbol}, skipping processing`);
           continue;
         }
 
-        console.log(`✅ Processing ${validCandles.length} validated closed candles for ${symbol}`);
+        console.log(`✅ Processing ${validCandles.length} validated closed 1-minute candles for ${symbol}`);
 
         // Prepare documents for insertion (using validated candles only)
         const documents = validCandles.map(candle => ({
           symbol,
-          interval,
+          interval: '1m', // Always 1-minute interval
           openTime: new Date(candle.openTime),
           closeTime: new Date(candle.closeTime),
           open: candle.open,
@@ -117,10 +117,11 @@ async function fetchAndStoreCandleData(client, dbName, interval = '1m', options 
         // Create a compound index for efficient querying if it doesn't exist
         await ensureIndexes(candleCollection);
 
-        // Upsert the candle data (to avoid duplicates) and detect reversal patterns
+        // Store the 1-minute candle data (NOTE: We only detect reversal patterns for 1-minute data here,
+        // all other timeframes will have their reversals detected when artificially generated)
         let reversalPatternsDetected = 0;
         for (const doc of documents) {
-          // Store the candle data
+          // Store the 1-minute candle data
           await candleCollection.updateOne(
             { 
               symbol: doc.symbol, 
@@ -131,7 +132,7 @@ async function fetchAndStoreCandleData(client, dbName, interval = '1m', options 
             { upsert: true }
           );
           
-          // Detect reversal pattern for this candle
+          // Detect reversal pattern for 1-minute candles only
           try {
             const reversalPattern = detectReversalCandle(doc);
             
@@ -162,101 +163,80 @@ async function fetchAndStoreCandleData(client, dbName, interval = '1m', options 
                   reversalPattern: reversalPattern
                 };
 
-                // Calculate volume footprint for 1-60 minute intervals
-                const validIntervals = ['1m', '2m', '3m', '4m', '5m', '6m', '7m', '8m', '9m', '10m', 
-                                       '11m', '12m', '13m', '14m', '15m', '16m', '17m', '18m', '19m', '20m',
-                                       '21m', '22m', '23m', '24m', '25m', '26m', '27m', '28m', '29m', '30m',
-                                       '31m', '32m', '33m', '34m', '35m', '36m', '37m', '38m', '39m', '40m',
-                                       '41m', '42m', '43m', '44m', '45m', '46m', '47m', '48m', '49m', '50m',
-                                       '51m', '52m', '53m', '54m', '55m', '56m', '57m', '58m', '59m', '60m'];
-                
-                if (validIntervals.includes(doc.interval)) {
-                  try {
-                    console.log(`🎯 Calculating volume footprint for ${doc.symbol} ${doc.interval} reversal candle`);
-                    
-                    const openTime = doc.openTime instanceof Date ? doc.openTime.getTime() : doc.openTime;
-                    const closeTime = doc.closeTime instanceof Date ? doc.closeTime.getTime() : doc.closeTime;
-                    
-                    // Try WebSocket data first if collector is available and connected
-                    let volumeFootprint = null;
-                    const tickCollector = getGlobalTickCollector();
-                    
-                    if (tickCollector && tickCollector.isConnected) {
-                      console.log(`📡 Attempting real-time volume footprint calculation via WebSocket`);
-                      // For real-time processing, we would typically start collection before the candle closes
-                      // Since this is historical processing, we'll fall back to historical data
-                    }
-                    
-                    // Fetch historical tick data and calculate volume footprint
-                    console.log(`📊 Fetching historical tick data for volume footprint`);
-                    const tickDataResult = await fetchReversalCandleTickData(
+                // Calculate volume footprint for 1-minute interval
+                try {
+                  console.log(`🎯 Calculating volume footprint for ${doc.symbol} 1m reversal candle`);
+                  
+                  const openTime = doc.openTime instanceof Date ? doc.openTime.getTime() : doc.openTime;
+                  const closeTime = doc.closeTime instanceof Date ? doc.closeTime.getTime() : doc.closeTime;
+                  
+                  // Fetch historical tick data and calculate volume footprint
+                  console.log(`📊 Fetching historical tick data for volume footprint`);
+                  const tickDataResult = await fetchReversalCandleTickData(
+                    doc.symbol,
+                    openTime,
+                    closeTime,
+                    doc.interval
+                  );
+
+                  if (tickDataResult.success && tickDataResult.trades.length > 0) {
+                    const volumeFootprint = calculateReversalVolumeFootprint(
+                      tickDataResult.trades,
                       doc.symbol,
                       openTime,
-                      closeTime,
-                      doc.interval
+                      closeTime
                     );
 
-                    if (tickDataResult.success && tickDataResult.trades.length > 0) {
-                      volumeFootprint = calculateReversalVolumeFootprint(
-                        tickDataResult.trades,
-                        doc.symbol,
-                        openTime,
-                        closeTime
-                      );
+                    if (!volumeFootprint.error) {
+                      // Add volume footprint data to reversal
+                      reversalData.volumeFootprint = {
+                        poc: volumeFootprint.poc,
+                        vah: volumeFootprint.vah,
+                        val: volumeFootprint.val,
+                        totalVolume: volumeFootprint.totalVolume,
+                        valueAreaVolume: volumeFootprint.valueAreaVolume,
+                        valueAreaPercentage: volumeFootprint.valueAreaPercentage,
+                        tickDataSource: 'historical',
+                        calculatedAt: new Date(),
+                        tradesProcessed: volumeFootprint.tradesProcessed,
+                        executionTime: tickDataResult.executionTime
+                      };
 
-                      if (!volumeFootprint.error) {
-                        // Add volume footprint data to reversal
-                        reversalData.volumeFootprint = {
-                          poc: volumeFootprint.poc,
-                          vah: volumeFootprint.vah,
-                          val: volumeFootprint.val,
-                          totalVolume: volumeFootprint.totalVolume,
-                          valueAreaVolume: volumeFootprint.valueAreaVolume,
-                          valueAreaPercentage: volumeFootprint.valueAreaPercentage,
-                          tickDataSource: 'historical',
-                          calculatedAt: new Date(),
-                          tradesProcessed: volumeFootprint.tradesProcessed,
-                          executionTime: tickDataResult.executionTime
-                        };
-
-                        console.log(`✅ Volume footprint calculated - POC: ${volumeFootprint.poc}, VAH: ${volumeFootprint.vah}, VAL: ${volumeFootprint.val}`);
+                      console.log(`✅ Volume footprint calculated - POC: ${volumeFootprint.poc}, VAH: ${volumeFootprint.vah}, VAL: ${volumeFootprint.val}`);
+                      
+                      // Validate trade signal based on volume footprint and candle data
+                      try {
+                        console.log(`🎯 Validating trade signal for ${doc.symbol} 1m reversal`);
+                        const tradeSignalValidation = validateTradeSignal(
+                          reversalData.candleData,
+                          reversalData.volumeFootprint,
+                          reversalPattern.type
+                        );
                         
-                        // Validate trade signal based on volume footprint and candle data
-                        try {
-                          console.log(`🎯 Validating trade signal for ${doc.symbol} ${doc.interval} reversal`);
-                          const tradeSignalValidation = validateTradeSignal(
-                            reversalData.candleData,
-                            reversalData.volumeFootprint,
-                            reversalPattern.type
-                          );
-                          
-                          // Add trade signal validation to reversal data
-                          reversalData.tradeSignal = {
-                            isValidSignal: tradeSignalValidation.isValidSignal,
-                            signalType: tradeSignalValidation.signalType,
-                            reason: tradeSignalValidation.reason,
-                            score: tradeSignalValidation.score || 0,
-                            criteria: tradeSignalValidation.criteria,
-                            validatedAt: new Date()
-                          };
-                          
-                          console.log(`🚦 Trade signal: ${tradeSignalValidation.isValidSignal ? '✅ VALID' : '❌ INVALID'} (${tradeSignalValidation.signalType || 'none'})`);
-                        } catch (signalError) {
-                          console.error(`❌ Error validating trade signal for ${doc.symbol} ${doc.interval}:`, signalError.message);
-                          // Continue without trade signal validation
-                        }
-                      } else {
-                        console.log(`⚠️ Volume footprint calculation failed: ${volumeFootprint.error}`);
+                        // Add trade signal validation to reversal data
+                        reversalData.tradeSignal = {
+                          isValidSignal: tradeSignalValidation.isValidSignal,
+                          signalType: tradeSignalValidation.signalType,
+                          reason: tradeSignalValidation.reason,
+                          score: tradeSignalValidation.score || 0,
+                          criteria: tradeSignalValidation.criteria,
+                          validatedAt: new Date()
+                        };
+                        
+                        console.log(`🚦 Trade signal: ${tradeSignalValidation.isValidSignal ? '✅ VALID' : '❌ INVALID'} (${tradeSignalValidation.signalType || 'none'})`);
+                      } catch (signalError) {
+                        console.error(`❌ Error validating trade signal for ${doc.symbol} 1m:`, signalError.message);
+                        // Continue without trade signal validation
                       }
                     } else {
-                      console.log(`⚠️ Could not fetch tick data: ${tickDataResult.error || 'No trades found'}`);
+                      console.log(`⚠️ Volume footprint calculation failed: ${volumeFootprint.error}`);
                     }
-                  } catch (footprintError) {
-                    console.error(`❌ Error calculating volume footprint for ${doc.symbol} ${doc.interval}:`, footprintError.message);
-                    // Continue without volume footprint data
+                  } else {
+                    console.log(`⚠️ Could not fetch tick data: ${tickDataResult.error || 'No trades found'}`);
                   }
-                } else {
-                  console.log(`ℹ️ Skipping volume footprint for ${doc.interval} - only processing 1-60 minute intervals`);
+                } catch (footprintError) {
+                  console.error(`❌ Error calculating volume footprint for ${doc.symbol} 1m:`, footprintError.message);
+                  // Continue without volume footprint data
                 }
                 
                 await saveReversalCandle(client, dbName, reversalData);
@@ -270,14 +250,14 @@ async function fetchAndStoreCandleData(client, dbName, interval = '1m', options 
         }
 
         results.candlesStored += documents.length;
-        console.log(`✅ Successfully stored ${documents.length} candles for ${symbol}${reversalPatternsDetected > 0 ? ` (${reversalPatternsDetected} reversal patterns detected)` : ''}`);
+        console.log(`✅ Successfully stored ${documents.length} 1-minute candles for ${symbol}${reversalPatternsDetected > 0 ? ` (${reversalPatternsDetected} reversal patterns detected)` : ''}`);
       } catch (symbolError) {
         console.error(`❌ Error processing ${symbol}:`, symbolError);
         results.errors.push(`Error for ${symbol}: ${symbolError.message}`);
       }
     }
 
-    console.log(`🏁 Candle data job completed. Stored ${results.candlesStored} candles for ${results.symbolsProcessed} symbols.`);
+    console.log(`🏁 1-minute candle data job completed. Stored ${results.candlesStored} candles for ${results.symbolsProcessed} symbols.`);
     
   } catch (error) {
     console.error('❌ Candle data job failed:', error);

@@ -1,11 +1,7 @@
 const { configureExpress } = require('./config/express');
 const { connectToMongoDB, dbName } = require('./config/database');
 const { 
-    setupCandleDataCronJob, 
-    setupArtificialCandleDataCronJobs,
-    runInitialCandleDataFetch,
-    runInitialArtificialCandleDataGeneration,
-    runInitialTopMoversSelection,
+    runInitialTopMoversAndHybridInitialization,
     setupMonitoringCronJob,
     setupTopMoversCronJob,
     setupDataCleanupCronJob
@@ -34,12 +30,6 @@ async function startServer() {
         console.log(`🚀 Server running on http://localhost:${PORT}`);
         
         if (client) {
-            // Set up the candle data cron job
-            setupCandleDataCronJob(client, dbName);
-            
-            // Set up the artificial candle data cron jobs
-            setupArtificialCandleDataCronJobs(client, dbName);
-            
             // Set up monitoring cron job
             setupMonitoringCronJob();
             
@@ -49,16 +39,10 @@ async function startServer() {
             // Set up data cleanup cron job
             setupDataCleanupCronJob(client, dbName);
             
-            // Run the initial fetch on startup
-            await runInitialCandleDataFetch(client, dbName);
+            // Run initial top movers selection and hybrid system initialization
+            await runInitialTopMoversAndHybridInitialization(client, dbName);
             
-            // Run initial artificial candle data generation
-            await runInitialArtificialCandleDataGeneration(client, dbName);
-            
-            // Run initial top movers selection
-            await runInitialTopMoversSelection(client, dbName);
-            
-            console.log('✅ All cron jobs have been successfully configured');
+            console.log('✅ Hybrid WebSocket + API system has been successfully configured');
         }
         
         // Close MongoDB connection when the Node process ends
