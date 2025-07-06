@@ -1,18 +1,39 @@
 /**
- * Fetches top gainers and losers from Binance Futures API
- * Returns top 20 gainers + top 20 losers for maximum volatility coverage
+ * Fetches top gainers and losers from Binance Futures PERPETUAL contracts only
+ * Returns top 30 gainers + top 30 losers for maximum volatility coverage
  */
 
 /**
- * Fetches the top moving symbols (gainers and losers) from Binance Futures
- * @param {number} topCount - Number of top gainers and losers to fetch (default: 20)
+ * Fetches the top moving symbols (gainers and losers) from Binance Futures PERPETUAL contracts only
+ * @param {number} topCount - Number of top gainers and losers to fetch (default: 30)
  * @returns {Promise<Object>} Object containing gainers, losers, and combined symbols
  */
-async function getTopMoversSymbols(topCount = 20) {
+async function getTopMoversSymbols(topCount = 30) {
     try {
-        console.log('🔥 Fetching top movers from Binance Futures API...');
+        console.log('🔥 Fetching top movers from Binance Futures PERPETUAL contracts...');
         
-        // Fetch 24hr ticker statistics from Binance Futures
+        // First, fetch exchange info to identify perpetual contracts
+        console.log('📋 Fetching exchange info to identify perpetual contracts...');
+        const exchangeResponse = await fetch('https://fapi.binance.com/fapi/v1/exchangeInfo');
+        
+        if (!exchangeResponse.ok) {
+            throw new Error(`Binance Exchange Info API error: ${exchangeResponse.status} - ${exchangeResponse.statusText}`);
+        }
+        
+        const exchangeInfo = await exchangeResponse.json();
+        
+        // Filter for USDT perpetual contracts only
+        const perpetualSymbols = exchangeInfo.symbols
+            .filter(symbol => 
+                symbol.symbol.endsWith('USDT') && 
+                symbol.contractType === 'PERPETUAL' &&
+                symbol.status === 'TRADING'
+            )
+            .map(symbol => symbol.symbol);
+        
+        console.log(`🎯 Found ${perpetualSymbols.length} active USDT perpetual contracts`);
+        
+        // Now fetch 24hr ticker statistics from Binance Futures
         const response = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr');
         
         if (!response.ok) {
@@ -21,22 +42,22 @@ async function getTopMoversSymbols(topCount = 20) {
         
         const tickerData = await response.json();
         
-        // Filter for USDT pairs only and active trading symbols
-        const usdtTickers = tickerData.filter(ticker => 
-            ticker.symbol.endsWith('USDT') && 
+        // Filter for perpetual USDT pairs only with active trading
+        const perpetualTickers = tickerData.filter(ticker => 
+            perpetualSymbols.includes(ticker.symbol) && 
             ticker.count > 0 && // Has trading activity
             parseFloat(ticker.volume) > 0 // Has volume
         );
         
-        console.log(`📊 Found ${usdtTickers.length} active USDT trading pairs`);
+        console.log(`📊 Found ${perpetualTickers.length} active perpetual USDT trading pairs with volume`);
         
         // Sort by price change percentage for gainers (descending - highest first)
-        const sortedByGains = [...usdtTickers].sort((a, b) => 
+        const sortedByGains = [...perpetualTickers].sort((a, b) => 
             parseFloat(b.priceChangePercent) - parseFloat(a.priceChangePercent)
         );
         
         // Sort by price change percentage for losers (ascending - lowest first)
-        const sortedByLosses = [...usdtTickers].sort((a, b) => 
+        const sortedByLosses = [...perpetualTickers].sort((a, b) => 
             parseFloat(a.priceChangePercent) - parseFloat(b.priceChangePercent)
         );
         
@@ -54,9 +75,9 @@ async function getTopMoversSymbols(topCount = 20) {
         // Remove duplicates (in case a symbol appears in both lists)
         const uniqueSymbols = [...new Set(combinedSymbols)];
         
-        console.log(`🎯 Selected ${uniqueSymbols.length} most volatile symbols:`);
-        console.log(`📈 Top ${topCount} Gainers: ${gainerSymbols.slice(0, 5).join(', ')}... (${parseFloat(topGainers[0].priceChangePercent).toFixed(2)}% to ${parseFloat(topGainers[topCount-1].priceChangePercent).toFixed(2)}%)`);
-        console.log(`📉 Top ${topCount} Losers: ${loserSymbols.slice(0, 5).join(', ')}... (${parseFloat(topLosers[0].priceChangePercent).toFixed(2)}% to ${parseFloat(topLosers[topCount-1].priceChangePercent).toFixed(2)}%)`);
+        console.log(`🎯 Selected ${uniqueSymbols.length} most volatile PERPETUAL contract symbols:`);
+        console.log(`📈 Top ${topCount} Perpetual Gainers: ${gainerSymbols.slice(0, 5).join(', ')}... (${parseFloat(topGainers[0].priceChangePercent).toFixed(2)}% to ${parseFloat(topGainers[topCount-1].priceChangePercent).toFixed(2)}%)`);
+        console.log(`📉 Top ${topCount} Perpetual Losers: ${loserSymbols.slice(0, 5).join(', ')}... (${parseFloat(topLosers[0].priceChangePercent).toFixed(2)}% to ${parseFloat(topLosers[topCount-1].priceChangePercent).toFixed(2)}%)`);
         
         return {
             success: true,
@@ -138,7 +159,7 @@ function getTopMoversSummary(topMoversData) {
  * Test the top movers function and display results
  * @param {number} topCount - Number of top gainers and losers to fetch
  */
-async function testTopMovers(topCount = 20) {
+async function testTopMovers(topCount = 30) {
     console.log('🧪 Testing Top Movers Function...\n');
     
     try {
