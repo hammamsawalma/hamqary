@@ -40,18 +40,20 @@ function detectReversalCandle(candle) {
     const upperTailPercentage = (upperTailCorrected / totalLength) * 100;
     const lowerTailPercentage = (lowerTailCorrected / totalLength) * 100;
     
-    // Check if body size exceeds 23% - if so, not a reversal candle
-    if (bodyPercentage > 23) {
+    // Check if body size is 23% or greater - if so, not a reversal candle
+    if (bodyPercentage >= 23) {
         return null;
     }
     
     // Determine candle color
     const isBullish = close > open;
     const isBearish = close < open;
+    const isDoji = close === open;
     
     // Check for buy reversal pattern
     // Buy reversal: body above, long tail below, short upper tail (≤5%)
-    if (lowerTailPercentage > upperTailPercentage && upperTailPercentage <= 5) {
+    // Buy reversals can only be green (bullish) or doji candles
+    if (lowerTailPercentage > upperTailPercentage && upperTailPercentage <= 5 && (isBullish || isDoji)) {
         // Body should be in the upper portion of the candle
         const bodyPosition = ((Math.min(open, close) - low) / totalLength) * 100;
         
@@ -88,7 +90,8 @@ function detectReversalCandle(candle) {
     
     // Check for sell reversal pattern
     // Sell reversal: body below, long tail above, short lower tail (≤5%)
-    if (upperTailPercentage > lowerTailPercentage && lowerTailPercentage <= 5) {
+    // Sell reversals can only be red (bearish) or doji candles
+    if (upperTailPercentage > lowerTailPercentage && lowerTailPercentage <= 5 && (isBearish || isDoji)) {
         // Body should be in the lower portion of the candle
         const bodyPosition = ((Math.max(open, close) - low) / totalLength) * 100;
         
